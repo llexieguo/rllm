@@ -1,0 +1,216 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rllm"
+version = "0.3.0.pre"
+description = "Reinforcement Learning for Language Agents"
+authors = [
+    {name = "rLLM Team"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+license = {file = "LICENSE"}
+dependencies = [
+    "rllm-model-gateway",
+    # CLI
+    "click>=8.0",
+    "rich>=13.9.4",
+    "simple-term-menu>=1.6",
+    # Core
+    "pydantic",
+    "PyYAML",
+    "openai",
+    "tqdm",
+    "requests",
+    # Data
+    "datasets>=2.20.0",
+    "pillow",
+    "pandas",
+    "polars",
+    "pyarrow",
+    "litellm[proxy]",
+    "aiosqlite",
+    "hydra-core",
+    "codetiming",
+    "tinker ; python_version >= '3.11'",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git#egg=tinker-cookbook ; python_version >= '3.11'",
+]
+
+[project.scripts]
+rllm = "rllm.experimental.cli.main:cli"
+
+[project.optional-dependencies]
+
+rewards = [
+    "sympy",
+    "pylatexenc",
+    "antlr4-python3-runtime==4.9.3",
+]
+
+tools = [
+    "mcp",
+]
+
+eval-protocol = [
+    "eval-protocol",
+]
+
+all = [
+    "rllm[train,rewards,sdk,tools,eval-protocol]",
+]
+
+ui = [
+    "httpx>=0.26.0",
+    "python-multipart>=0.0.6",
+]
+
+dev = [
+    "pytest",
+    "pre-commit",
+    "ruff",
+    "mypy",
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.24.0",
+    "mkdocs-autorefs>=0.5.0",
+    "pymdown-extensions>=10.0.0",
+]
+
+verl = [
+    "torch",
+    "transformers>=4.55.0,<5.0.0",
+    "numpy",
+    "verl==0.6.1",
+    "ray",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "vllm>=0.10.2,<=0.11.0",
+    "flash-attn>=2.8.1",
+    "qwen-vl-utils",
+]
+
+sdk = [
+    "aiohttp",
+    "fastapi",
+    "uvicorn",
+]
+
+tinker = [
+    "tinker ; python_version >= '3.11'",
+    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git#egg=tinker-cookbook ; python_version >= '3.11'",
+]
+
+verifiers = [
+    "verifiers==0.1.9"
+]
+
+opentelemetry = [
+    "opentelemetry-sdk",
+]
+
+smolagents = [
+    "smolagents==1.20.0",
+]
+
+strands = [
+    "strands-agents",
+]
+
+langgraph = [
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.2.0",
+]
+
+swe = [
+    "docker",
+    "kubernetes",
+    "swebench",
+]
+
+web = [
+    "selenium",
+    "browsergym",
+    "firecrawl",
+    "gymnasium",
+]
+
+code-tools = [
+    "e2b_code_interpreter",
+    "together>=1.4",
+]
+
+[tool.uv]
+override-dependencies = [
+    "litellm[proxy]>=1.80.0",
+]
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [
+    { requirement = "torch", match-runtime = true },
+]
+
+[tool.ruff]
+line-length = 5000 # TODO: Reduce this to a more reasonable value
+
+[tool.ruff.lint]
+isort = {known-first-party = ["rllm"], known-third-party = ["verl"]}
+# c.f. https://github.com/vllm-project/vllm/blob/ce8d6b75fc0586045df75ee1568a5b5f9957251b/pyproject.toml
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # isort
+    "I",
+    "G",
+]
+ignore = [
+    # star imports
+    "F405", "F403",
+    # lambda expression assignment
+    "E731",
+    # Loop control variable not used within loop body
+    "B007",
+    # f-string format
+    "UP032",
+    # `.log()` statement uses f-string
+    "G004",
+    # equality check using x == True
+    "E712",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"rllm/rewards/code_utils/**" = ["ALL"]
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["rllm", "rllm.*"]
+
+[tool.setuptools.package-data]
+rllm = ["trainer/config/*.yaml", "registry/*.json", "experimental/config/**/*.yaml"]
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+check_untyped_defs = true
+follow_imports = "silent"
+exclude = [
+    "verl/.*",
+    "rllm/rewards/code_utils/.*",
+    "rllm/rewards/math_utils/.*",
+    "examples/.*",
+    "scripts/.*",
+    "tests/.*",
+    "docs/.*",
+]
