@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from examples.mas_orchestra.types import AttemptRecord
+from examples.mas_orchestra.schema import AttemptRecord
 
 
 @dataclass

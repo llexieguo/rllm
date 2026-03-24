@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from examples.mas_orchestra.parsing import extract_unique_boxed_letter
-from examples.mas_orchestra.types import ReasoningSample
+from examples.mas_orchestra.schema import ReasoningSample
 
 
 def gold_letter(answer_index: int) -> str:

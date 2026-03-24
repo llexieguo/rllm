@@ -6,7 +6,7 @@ from typing import Any
 
 from examples.mas_orchestra.parsing import extract_confidence, extract_unique_boxed_letter, parse_json_fragment
 from examples.mas_orchestra.prompts import build_sub_prompt
-from examples.mas_orchestra.types import DelegateRequest, DelegateResult, ReasoningSample
+from examples.mas_orchestra.schema import DelegateRequest, DelegateResult, ReasoningSample
 
 
 def build_delegate_result(raw_text: str, *, cost: float = 0.0, input_tokens: int = 0, output_tokens: int = 0) -> DelegateResult:

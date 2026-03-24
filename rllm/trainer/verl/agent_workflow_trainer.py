@@ -192,6 +192,13 @@ class AgentWorkflowPPOTrainer(RayPPOTrainer):
 
                     # need to repeat to make shape match
                     repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]
+                    dropped_episodes = final_gen_batch_output.meta_info.get("dropped_episodes", [])
+                    if getattr(final_gen_batch_output, "batch", None) is None or sum(repeat_counts) == 0:
+                        for ep in dropped_episodes:
+                            termination_counts.update([ep.get("termination_reason", "unknown")])
+                        print("All episodes in batch were dropped before producing valid trajectories, skipping batch")
+                        continue
+
                     new_batch = new_batch.sample_level_repeat(repeat_counts)
                     final_gen_batch_output.meta_info.pop("repeat_counts", None)  # no longer needed after this
                     new_batch = new_batch.union(final_gen_batch_output)

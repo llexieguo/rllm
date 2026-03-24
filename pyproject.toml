@@ -73,6 +73,7 @@ ui = [
 
 dev = [
     "pytest",
+    "pytest-asyncio",
     "pre-commit",
     "ruff",
     "mypy",

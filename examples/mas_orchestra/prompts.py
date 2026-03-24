@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from examples.mas_orchestra.pricing import ModelPricing
-from examples.mas_orchestra.types import AttemptRecord, ReasoningSample
+from examples.mas_orchestra.schema import AttemptRecord, ReasoningSample
 
 
 def build_model_pricing_table(sub_models: list[str]) -> str:

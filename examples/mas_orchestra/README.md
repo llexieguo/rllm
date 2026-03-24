@@ -17,44 +17,73 @@ External delegate models are mocked in this example by default. No real API call
 Run from the repository root:
 
 ```bash
-conda run -n orchestra python examples/mas_orchestra/prepare_dataset.py
+python -m examples.mas_orchestra.prepare_dataset
 ```
+
+This example assumes the source dataset only exposes a `test` split. The script shuffles that split with `seed=42`, reserves `145` examples as the held-out `test` split, and uses the remainder as `train`.
 
 Useful overrides:
 
 ```bash
-conda run -n orchestra python examples/mas_orchestra/prepare_dataset.py \
-  --dataset-name sgi_reasoning_mas_orchestra_small \
-  --train-limit 32 \
-  --val-limit 16
+python -m examples.mas_orchestra.prepare_dataset   --dataset-name sgi_reasoning_mas_orchestra_small   --train-limit 32   --test-size 145   --seed 42
 ```
 
-This registers `train` and `test` splits in `DatasetRegistry` and also creates the companion VeRL parquet files.
+If you must create a validation split, carve it out of the held-out test pool:
+
+```bash
+python -m examples.mas_orchestra.prepare_dataset --val-size 16
+```
+
+That registers `train` and `test` in `DatasetRegistry`, and registers `val` only when `--val-size` is greater than zero.
 
 ## Run tests
+
+Install the test dependencies first:
+
+```bash
+uv pip install -e ".[dev]"
+```
+
+Then run:
 
 ```bash
 ./examples/mas_orchestra/test.sh
 ```
 
-The suite is fully mock-based. If `torch` or `verl` are not installed in the `orchestra` environment, the VeRL rollout smoke test is skipped and the pure workflow tests still run.
+The suite is fully mock-based. If `torch` or `verl` are not installed in the environment, the VeRL rollout smoke test is skipped and the pure workflow tests still run.
 
 ## Train with VeRL
 
 The default dataset name is `sgi_reasoning_mas_orchestra`. Prepare that dataset first, then launch training:
 
 ```bash
-conda run -n orchestra python examples/mas_orchestra/train_mas_orchestra.py
+./examples/mas_orchestra/train.sh
 ```
 
-Example with a few common Hydra overrides:
+When no `val` split exists, this example disables validation automatically instead of reusing `test`. The example also defaults to `algorithm.adv_estimator=grpo`.
+
+The training script centralizes the common knobs:
+
+- `CUDA_VISIBLE_DEVICES`: which GPUs to use, default `0,1`
+- `N_GPUS_PER_NODE`: how many GPUs Ray should reserve, defaults to the number of visible GPUs
+- `TP_SIZE`: tensor parallel size for vLLM rollout, default `1`
+- `MODEL_PATH`: local path or Hugging Face repo id, default `Qwen/Qwen3-VL-2B-Instruct`
+- `TRAIN_BATCH_SIZE` and `PPO_MINI_BATCH_SIZE`: common batch settings, default `64`
+
+Example overrides:
 
 ```bash
-conda run -n orchestra python examples/mas_orchestra/train_mas_orchestra.py \
-  trainer.total_epochs=1 \
-  data.train_batch_size=2 \
-  data.val_batch_size=2 \
-  model.path=<your-local-policy-model>
+CUDA_VISIBLE_DEVICES=0,1 MODEL_PATH=Qwen/Qwen3-VL-2B-Instruct ./examples/mas_orchestra/train.sh
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=1 N_GPUS_PER_NODE=1 TP_SIZE=1 MODEL_PATH=/abs/path/to/local-model ./examples/mas_orchestra/train.sh
+```
+
+For a dry run that only prints the final command:
+
+```bash
+DRY_RUN=1 ./examples/mas_orchestra/train.sh
 ```
 
 This example always trains the local `main_model` policy. If the workflow delegates to `main_model`, that branch is treated as self-think and is also recorded as trainable policy behavior.

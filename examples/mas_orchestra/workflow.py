@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
@@ -11,7 +14,7 @@ from examples.mas_orchestra.parsing import parse_json_fragment
 from examples.mas_orchestra.prompts import build_main_prompt, build_sub_prompt
 from examples.mas_orchestra.scoring import compute_mca
 from examples.mas_orchestra.subclients import MockSubModelClient, SubModelClient, build_delegate_request, build_delegate_result, task_to_reasoning_sample
-from examples.mas_orchestra.types import AttemptRecord, MainAction, ReasoningSample
+from examples.mas_orchestra.schema import AttemptRecord, MainAction, ReasoningSample
 from rllm.agents.agent import Action, Episode, Step, Trajectory
 from rllm.engine import ModelOutput, RolloutEngine
 from rllm.workflows.workflow import TerminationReason, Workflow
@@ -28,6 +31,33 @@ DEFAULT_WORKFLOW_ARGS = {
     "mock_external_submodels": True,
     "mock_delegate_responses": None,
 }
+
+DEFAULT_STEP_LOG_ROOT = Path(os.environ.get("MAS_ORCHESTRA_STEP_LOG_ROOT", "logs/mas_orchestra"))
+DEFAULT_RUN_ID = os.environ.get("MAS_ORCHESTRA_RUN_ID")
+
+
+def _sanitize_message(message: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(message)
+    images = sanitized.pop("images", None)
+    if images is not None:
+        sanitized["image_count"] = len(images)
+    return sanitized
+
+
+def _resolve_step_log_dir(path: Path | str | None = None) -> Path:
+    resolved = Path(path).expanduser() if path is not None else DEFAULT_STEP_LOG_ROOT
+    if not resolved.is_absolute():
+        resolved = Path.cwd() / resolved
+    run_id = DEFAULT_RUN_ID or "default_run"
+    return resolved / run_id
+
+
+def write_step_log(record: dict[str, Any], *, step_index: int, step_type: str, uid: str, path: Path | str | None = None) -> None:
+    log_dir = _resolve_step_log_dir(path)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{step_index:03d}_{uid.replace(':', '_')}_{step_type}.json"
+    with (log_dir / filename).open("w", encoding="utf-8") as handle:
+        json.dump(record, handle, ensure_ascii=False, indent=2)
 
 
 def normalize_images(images: list[Any]) -> list[Any]:
@@ -118,6 +148,7 @@ class MasOrchestraWorkflow(Workflow):
         mock_external_submodels: bool = True,
         mock_delegate_responses: dict[str, list[str] | str] | list[str] | str | None = None,
         sub_model_client: SubModelClient | None = None,
+        step_log_root: str | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -132,6 +163,7 @@ class MasOrchestraWorkflow(Workflow):
         self.temperature_main = temperature_main
         self.temperature_sub = temperature_sub
         self.use_images = use_images
+        self.step_log_root = Path(step_log_root).expanduser() if step_log_root else DEFAULT_STEP_LOG_ROOT
         if sub_model_client is not None:
             self.sub_model_client = sub_model_client
         elif mock_external_submodels:
@@ -146,6 +178,8 @@ class MasOrchestraWorkflow(Workflow):
         memory = MainMemory()
         trajectory = Trajectory(name="orchestra_policy", task=task)
         submit_result: dict[str, Any] | None = None
+        step_logs: list[dict[str, Any]] = []
+        step_index = 0
         model_usage: dict[str, int] = {}
         models_used: list[str] = []
         main_policy_calls = 0
@@ -172,6 +206,30 @@ class MasOrchestraWorkflow(Workflow):
 
             main_text = main_output.content or main_output.text or ""
             parsed_action = parse_main_action(main_text)
+            main_step_log = {
+                "uid": uid,
+                "task_id": sample.task_id,
+                "question": sample.question,
+                "step_type": "main",
+                "step_index": step_index,
+                "attempt_index": attempt_idx,
+                "model": self.main_model,
+                "messages": [_sanitize_message(message) for message in main_messages],
+                "raw_output": main_text,
+                "finish_reason": main_output.finish_reason,
+                "parsed_action": {
+                    "action": parsed_action.action,
+                    "reasoning": parsed_action.reasoning,
+                    "model": parsed_action.model,
+                    "instruction": parsed_action.instruction,
+                    "submit_reason": parsed_action.submit_reason,
+                },
+                "prompt_tokens": len(main_output.prompt_ids or []),
+                "completion_tokens": len(main_output.completion_ids or []),
+            }
+            step_logs.append(main_step_log)
+            write_step_log(main_step_log, step_index=step_index, step_type="main", uid=uid, path=self.step_log_root)
+            step_index += 1
             if force_submit and should_submit(memory, self.submit_confidence_threshold):
                 parsed_action = MainAction(
                     action="submit",
@@ -246,6 +304,32 @@ class MasOrchestraWorkflow(Workflow):
                     input_tokens=len(delegate_output.prompt_ids or []),
                     output_tokens=len(delegate_output.completion_ids or []),
                 )
+                delegate_step_log = {
+                    "uid": uid,
+                    "task_id": sample.task_id,
+                    "question": sample.question,
+                    "step_type": "delegate_local",
+                    "step_index": step_index,
+                    "attempt_index": attempt_idx,
+                    "model": request.model,
+                    "instruction": request.instruction,
+                    "messages": [_sanitize_message(message) for message in delegate_messages],
+                    "raw_output": delegate_text,
+                    "finish_reason": delegate_output.finish_reason,
+                    "delegate_result": {
+                        "raw_answer_text": delegate_result.raw_answer_text,
+                        "boxed_letter": delegate_result.boxed_letter,
+                        "confidence": delegate_result.confidence,
+                        "reasoning_summary": delegate_result.reasoning_summary,
+                        "parse_ok": delegate_result.parse_ok,
+                        "error": delegate_result.error,
+                        "input_tokens": delegate_result.input_tokens,
+                        "output_tokens": delegate_result.output_tokens,
+                    },
+                }
+                step_logs.append(delegate_step_log)
+                write_step_log(delegate_step_log, step_index=step_index, step_type="delegate_local", uid=uid, path=self.step_log_root)
+                step_index += 1
                 delegate_step = Step.from_model_output(
                     delegate_output,
                     messages=delegate_messages,
@@ -265,6 +349,36 @@ class MasOrchestraWorkflow(Workflow):
                 external_delegate_calls += 1
                 record_model_call(request.model)
                 delegate_result = await self.sub_model_client.run(request)
+                delegate_step_log = {
+                    "uid": uid,
+                    "task_id": sample.task_id,
+                    "question": sample.question,
+                    "step_type": "delegate_external",
+                    "step_index": step_index,
+                    "attempt_index": attempt_idx,
+                    "model": request.model,
+                    "instruction": request.instruction,
+                    "request": {
+                        "task_id": request.task_id,
+                        "question": request.question,
+                        "options": request.options,
+                        "prior_attempt_count": len(request.prior_attempts),
+                        "image_count": len(request.images),
+                    },
+                    "delegate_result": {
+                        "raw_answer_text": delegate_result.raw_answer_text,
+                        "boxed_letter": delegate_result.boxed_letter,
+                        "confidence": delegate_result.confidence,
+                        "reasoning_summary": delegate_result.reasoning_summary,
+                        "parse_ok": delegate_result.parse_ok,
+                        "error": delegate_result.error,
+                        "input_tokens": delegate_result.input_tokens,
+                        "output_tokens": delegate_result.output_tokens,
+                    },
+                }
+                step_logs.append(delegate_step_log)
+                write_step_log(delegate_step_log, step_index=step_index, step_type="delegate_external", uid=uid, path=self.step_log_root)
+                step_index += 1
 
             memory.add_attempt(
                 AttemptRecord(
@@ -313,6 +427,15 @@ class MasOrchestraWorkflow(Workflow):
                 "models_used": models_used,
                 "model_usage": model_usage,
                 "submit_reason": submit_result["reason"],
+            }
+        )
+        episode.metadata.update(
+            {
+                "step_log_dir": str(_resolve_step_log_dir(self.step_log_root)),
+                "step_log_count": step_index,
+                "final_answer_text": submit_result["final_answer_text"],
+                "final_boxed_letter": submit_result["final_boxed_letter"],
+                "termination_reason": str(termination_reason),
             }
         )
         return episode

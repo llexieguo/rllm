@@ -19,15 +19,20 @@ class FakeAgentTrainer:
 
 def test_build_trainer_constructs_verl_workflow_trainer(monkeypatch):
     fake_train_dataset = Dataset([{"task_id": "t1"}], name="mock", split="train")
-    fake_val_dataset = Dataset([{"task_id": "t2"}], name="mock", split="test")
+    fake_val_dataset = Dataset([{"task_id": "t2"}], name="mock", split="val")
 
     def fake_load_dataset(name: str, split: str):
-        return fake_train_dataset if split == "train" else fake_val_dataset
+        if split == "train":
+            return fake_train_dataset
+        if split == "val":
+            return fake_val_dataset
+        return None
 
     monkeypatch.setattr("examples.mas_orchestra.train_mas_orchestra.DatasetRegistry.load_dataset", fake_load_dataset)
 
+    config = OmegaConf.create({"trainer": {"project_name": "demo", "test_freq": 5}, "data": {"val_files": "dummy"}, "algorithm": {"adv_estimator": "gae"}, "actor_rollout_ref": {"model": {"path": "~/actor-model"}}, "critic": {"model": {"path": "~/critic-model"}}})
     trainer = build_trainer(
-        OmegaConf.create({"trainer": {"project_name": "demo"}}),
+        config,
         dataset_name="mock-dataset",
         workflow_args={"main_model": "trained-policy"},
         trainer_cls=FakeAgentTrainer,
@@ -39,6 +44,98 @@ def test_build_trainer_constructs_verl_workflow_trainer(monkeypatch):
     assert trainer.kwargs["val_dataset"] is fake_val_dataset
     assert trainer.kwargs["workflow_args"]["main_model"] == "trained-policy"
     assert trainer.kwargs["workflow_args"]["mock_external_submodels"] is True
+    assert config.algorithm.adv_estimator == "grpo"
+    assert config.actor_rollout_ref.model.path.endswith("/actor-model")
+    assert config.critic.model.path.endswith("/critic-model")
+    assert config.trainer.test_freq == 5
+
+
+def test_build_trainer_tunes_batch_sizes_for_small_datasets(monkeypatch):
+    fake_train_dataset = Dataset([{"task_id": f"t{i}"} for i in range(10)], name="mock", split="train")
+
+    def fake_load_dataset(name: str, split: str):
+        if split == "train":
+            return fake_train_dataset
+        return None
+
+    monkeypatch.setattr("examples.mas_orchestra.train_mas_orchestra.DatasetRegistry.load_dataset", fake_load_dataset)
+
+    config = OmegaConf.create(
+        {
+            "trainer": {"project_name": "demo", "val_before_train": False, "val_only": False, "test_freq": -1},
+            "data": {"train_batch_size": 1024, "val_files": None},
+            "algorithm": {"adv_estimator": "gae"},
+            "actor_rollout_ref": {"actor": {"ppo_mini_batch_size": 256}, "model": {"path": "~/actor-model"}},
+            "critic": {"model": {"path": "~/critic-model"}},
+        }
+    )
+    trainer = build_trainer(
+        config,
+        dataset_name="mock-dataset",
+        trainer_cls=FakeAgentTrainer,
+    )
+
+    assert trainer.kwargs["train_dataset"] is fake_train_dataset
+    assert config.data.train_batch_size == 10
+    assert config.actor_rollout_ref.actor.ppo_mini_batch_size == 10
+
+
+
+def test_build_trainer_preserves_explicit_adv_estimator_override(monkeypatch):
+    fake_train_dataset = Dataset([{"task_id": "t1"}], name="mock", split="train")
+
+    def fake_load_dataset(name: str, split: str):
+        if split == "train":
+            return fake_train_dataset
+        return None
+
+    monkeypatch.setattr("examples.mas_orchestra.train_mas_orchestra.DatasetRegistry.load_dataset", fake_load_dataset)
+
+    config = OmegaConf.create(
+        {
+            "trainer": {"project_name": "demo", "val_before_train": False, "val_only": False, "test_freq": -1},
+            "data": {"val_files": None},
+            "algorithm": {"adv_estimator": "reinforce"},
+        }
+    )
+    trainer = build_trainer(
+        config,
+        dataset_name="mock-dataset",
+        trainer_cls=FakeAgentTrainer,
+    )
+
+    assert trainer.kwargs["train_dataset"] is fake_train_dataset
+    assert config.algorithm.adv_estimator == "reinforce"
+
+
+def test_build_trainer_disables_validation_when_val_split_is_missing(monkeypatch):
+    fake_train_dataset = Dataset([{"task_id": "t1"}], name="mock", split="train")
+
+    def fake_load_dataset(name: str, split: str):
+        if split == "train":
+            return fake_train_dataset
+        return None
+
+    monkeypatch.setattr("examples.mas_orchestra.train_mas_orchestra.DatasetRegistry.load_dataset", fake_load_dataset)
+
+    config = OmegaConf.create(
+        {
+            "trainer": {"project_name": "demo", "val_before_train": True, "val_only": True, "test_freq": 5},
+            "data": {"val_files": "dummy"},
+        }
+    )
+    trainer = build_trainer(
+        config,
+        dataset_name="mock-dataset",
+        trainer_cls=FakeAgentTrainer,
+    )
+
+    assert trainer.kwargs["train_dataset"] is fake_train_dataset
+    assert trainer.kwargs["val_dataset"] is None
+    assert config.trainer.val_before_train is False
+    assert config.trainer.val_only is False
+    assert config.trainer.test_freq == -1
+    assert config.data.val_files == fake_train_dataset.get_verl_data_path()
 
 
 @dataclass
@@ -101,7 +198,7 @@ async def test_execute_tasks_verl_builds_trainable_batch():
             "main_model": "local-policy",
             "sub_models": ["remote-sub", "local-policy"],
             "mock_delegate_responses": {
-                "remote-sub": '{"reasoning":"checked","final_answer":"\\\\boxed{A}","confidence":0.94}'
+                "remote-sub": '{"reasoning":"checked","final_answer":"\\boxed{A}","confidence":0.94}'
             },
         },
         rollout_engine=rollout_engine,
@@ -128,4 +225,4 @@ async def test_execute_tasks_verl_builds_trainable_batch():
     assert result.meta_info["repeat_counts"] == [2]
     assert result.non_tensor_batch["is_correct"].tolist() == [True, True]
     assert result.non_tensor_batch["step_nums"].tolist() == [2, 2]
-    assert result.tensors["responses"].shape[0] == 2
+    assert result.batch["responses"].shape[0] == 2
