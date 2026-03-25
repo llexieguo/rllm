@@ -16,6 +16,7 @@ import fcntl
 from PIL import Image
 
 from examples.mas_orchestra.parsing import extract_confidence, extract_unique_boxed_letter, parse_json_fragment
+from examples.mas_orchestra.pricing import ModelPricing
 from examples.mas_orchestra.prompts import build_sub_prompt
 from examples.mas_orchestra.schema import DelegateRequest, DelegateResult, ReasoningSample
 
@@ -46,10 +47,17 @@ def _pricing(model_name: str | None = None) -> tuple[float, float]:
     model_output = _env_float(f"MAS_ORCHESTRA_API_{model_key}_OUTPUT_COST_PER_1M", None)
     if model_input is not None or model_output is not None:
         return float(model_input or 0.0), float(model_output or 0.0)
-    return (
-        float(_env_float("MAS_ORCHESTRA_API_INPUT_COST_PER_1M", 0.0) or 0.0),
-        float(_env_float("MAS_ORCHESTRA_API_OUTPUT_COST_PER_1M", 0.0) or 0.0),
-    )
+
+    generic_input = _env_float("MAS_ORCHESTRA_API_INPUT_COST_PER_1M", None)
+    generic_output = _env_float("MAS_ORCHESTRA_API_OUTPUT_COST_PER_1M", None)
+    if generic_input is not None or generic_output is not None:
+        return float(generic_input or 0.0), float(generic_output or 0.0)
+
+    pricing = ModelPricing.resolve_pricing(model_name or "")
+    if pricing is not None:
+        return float(pricing["input"]) * 1000.0, float(pricing["output"]) * 1000.0
+
+    return 0.0, 0.0
 
 
 def _compute_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
