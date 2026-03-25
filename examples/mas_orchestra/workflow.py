@@ -13,9 +13,10 @@ from examples.mas_orchestra.memory import MainMemory
 from examples.mas_orchestra.parsing import parse_json_fragment
 from examples.mas_orchestra.prompts import build_main_prompt, build_sub_prompt
 from examples.mas_orchestra.scoring import compute_mca
-from examples.mas_orchestra.subclients import MockSubModelClient, SubModelClient, build_delegate_request, build_delegate_result, task_to_reasoning_sample
+from examples.mas_orchestra.subclients import MockSubModelClient, OpenAISubModelClient, SubModelClient, build_delegate_request, build_delegate_result, delegate_result_to_log, task_to_reasoning_sample
 from examples.mas_orchestra.schema import AttemptRecord, MainAction, ReasoningSample
 from rllm.agents.agent import Action, Episode, Step, Trajectory
+from rllm.exceptions import ExternalCostBudgetExceeded
 from rllm.engine import ModelOutput, RolloutEngine
 from rllm.workflows.workflow import TerminationReason, Workflow
 
@@ -52,11 +53,20 @@ def _resolve_step_log_dir(path: Path | str | None = None) -> Path:
     return resolved / run_id
 
 
-def write_step_log(record: dict[str, Any], *, step_index: int, step_type: str, uid: str, path: Path | str | None = None) -> None:
+def _safe_filename_part(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in value)
+
+
+def rollout_log_path(task_id: str, uid: str, path: Path | str | None = None) -> Path:
     log_dir = _resolve_step_log_dir(path)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{step_index:03d}_{uid.replace(':', '_')}_{step_type}.json"
-    with (log_dir / filename).open("w", encoding="utf-8") as handle:
+    filename = f"{_safe_filename_part(str(task_id))}__{_safe_filename_part(uid)}.json"
+    return log_dir / filename
+
+
+def write_rollout_log(record: dict[str, Any], *, task_id: str, uid: str, path: Path | str | None = None) -> None:
+    target = rollout_log_path(task_id=task_id, uid=uid, path=path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as handle:
         json.dump(record, handle, ensure_ascii=False, indent=2)
 
 
@@ -88,6 +98,8 @@ def parse_main_action(raw_text: str) -> MainAction:
     return MainAction(
         action=str(payload.get("action", "invalid")).strip(),
         reasoning=str(payload.get("reasoning", "")).strip(),
+        task_type=str(payload["task_type"]).strip() if payload.get("task_type") is not None else None,
+        difficulty=str(payload["difficulty"]).strip() if payload.get("difficulty") is not None else None,
         model=str(payload["model"]) if payload.get("model") is not None else None,
         instruction=str(payload["instruction"]) if payload.get("instruction") is not None else None,
         submit_reason=str(payload["submit_reason"]) if payload.get("submit_reason") is not None else None,
@@ -169,7 +181,7 @@ class MasOrchestraWorkflow(Workflow):
         elif mock_external_submodels:
             self.sub_model_client = MockSubModelClient(mock_delegate_responses)
         else:
-            raise ValueError("This example only supports mocked external sub-models. Provide a sub_model_client or enable mock_external_submodels.")
+            self.sub_model_client = OpenAISubModelClient.from_env()
 
     async def run(self, task: dict, uid: str, **kwargs) -> Episode:
         self.reset(task, uid)
@@ -191,6 +203,103 @@ class MasOrchestraWorkflow(Workflow):
             model_usage[model_name] = model_usage.get(model_name, 0) + 1
             if model_name not in models_used:
                 models_used.append(model_name)
+
+        def persist_rollout_log(status: str = "in_progress") -> None:
+            write_rollout_log(
+                {
+                    "uid": uid,
+                    "task_id": sample.task_id,
+                    "question": sample.question,
+                    "options": sample.options,
+                    "answer_index": sample.answer_index,
+                    "discipline": sample.discipline,
+                    "status": status,
+                    "termination_reason": str(termination_reason),
+                    "final_answer_text": submit_result["final_answer_text"] if submit_result is not None else None,
+                    "final_boxed_letter": submit_result["final_boxed_letter"] if submit_result is not None else None,
+                    "submit_reason": submit_result["reason"] if submit_result is not None else None,
+                    "attempt_count": submit_result["attempt_count"] if submit_result is not None else len(memory.attempts),
+                    "main_policy_calls": main_policy_calls,
+                    "delegate_policy_calls": delegate_policy_calls,
+                    "external_delegate_calls": external_delegate_calls,
+                    "models_used": models_used,
+                    "model_usage": model_usage,
+                    "steps": step_logs,
+                },
+                task_id=sample.task_id,
+                uid=uid,
+                path=self.step_log_root,
+            )
+
+        async def run_local_delegate(
+            request,
+            *,
+            attempt_idx: int,
+            requested_model: str | None = None,
+            step_type: str = "delegate_local",
+            api_error: str | None = None,
+        ):
+            nonlocal delegate_policy_calls, step_index, termination_reason
+
+            delegate_messages = self._build_delegate_messages(sample, memory, request.instruction)
+            delegate_output = await self.rollout_engine.get_model_response(
+                delegate_messages,
+                application_id=f"{uid}:delegate:{attempt_idx}",
+                temperature=self.temperature_sub,
+                **kwargs,
+            )
+            delegate_policy_calls += 1
+            record_model_call(self.main_model)
+            delegate_text = delegate_output.content or delegate_output.text or ""
+            delegate_result = build_delegate_result(
+                delegate_text,
+                input_tokens=len(delegate_output.prompt_ids or []),
+                output_tokens=len(delegate_output.completion_ids or []),
+                provider_model=self.main_model,
+            )
+            delegate_step_log = {
+                "uid": uid,
+                "task_id": sample.task_id,
+                "question": sample.question,
+                "step_type": step_type,
+                "step_index": step_index,
+                "attempt_index": attempt_idx,
+                "model": self.main_model,
+                "delegate_model_requested": requested_model or request.model,
+                "delegate_model_effective": self.main_model,
+                "provider_model": self.main_model,
+                "instruction": request.instruction,
+                "messages": [_sanitize_message(message) for message in delegate_messages],
+                "raw_output": delegate_text,
+                "finish_reason": delegate_output.finish_reason,
+                "prompt_tokens": len(delegate_output.prompt_ids or []),
+                "completion_tokens": len(delegate_output.completion_ids or []),
+                "cost": 0.0,
+                "delegate_result": delegate_result_to_log(delegate_result),
+                "api_call": False,
+                "fallback_from_api_error": api_error is not None,
+            }
+            if api_error is not None:
+                delegate_step_log["api_error"] = api_error
+            step_logs.append(delegate_step_log)
+            persist_rollout_log()
+            step_index += 1
+            delegate_step = Step.from_model_output(
+                delegate_output,
+                messages=delegate_messages,
+                action=Action(
+                    action={
+                        "action": "self_think",
+                        "model": self.main_model,
+                        "requested_model": requested_model or request.model,
+                        "instruction": request.instruction,
+                    }
+                ),
+            )
+            trajectory.steps.append(delegate_step)
+            if delegate_output.finish_reason == "length":
+                termination_reason = TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED
+            return delegate_result
 
         for attempt_idx in range(1, self.max_attempts + 1):
             force_submit = attempt_idx == self.max_attempts and bool(memory.attempts)
@@ -220,16 +329,18 @@ class MasOrchestraWorkflow(Workflow):
                 "parsed_action": {
                     "action": parsed_action.action,
                     "reasoning": parsed_action.reasoning,
+                    "task_type": parsed_action.task_type,
+                    "difficulty": parsed_action.difficulty,
                     "model": parsed_action.model,
                     "instruction": parsed_action.instruction,
                     "submit_reason": parsed_action.submit_reason,
                 },
                 "prompt_tokens": len(main_output.prompt_ids or []),
                 "completion_tokens": len(main_output.completion_ids or []),
+                "cost": 0.0,
+                "api_call": False,
             }
             step_logs.append(main_step_log)
-            write_step_log(main_step_log, step_index=step_index, step_type="main", uid=uid, path=self.step_log_root)
-            step_index += 1
             if force_submit and should_submit(memory, self.submit_confidence_threshold):
                 parsed_action = MainAction(
                     action="submit",
@@ -258,6 +369,18 @@ class MasOrchestraWorkflow(Workflow):
                     instruction="Retry with strict format and clearer confidence.",
                 )
 
+            main_step_log["effective_action"] = {
+                "action": parsed_action.action,
+                "reasoning": parsed_action.reasoning,
+                "task_type": parsed_action.task_type,
+                "difficulty": parsed_action.difficulty,
+                "model": parsed_action.model,
+                "instruction": parsed_action.instruction,
+                "submit_reason": parsed_action.submit_reason,
+            }
+            persist_rollout_log()
+            step_index += 1
+
             main_step = Step.from_model_output(
                 main_output,
                 messages=main_messages,
@@ -265,6 +388,8 @@ class MasOrchestraWorkflow(Workflow):
                     action={
                         "action": parsed_action.action,
                         "reasoning": parsed_action.reasoning,
+                        "task_type": parsed_action.task_type,
+                        "difficulty": parsed_action.difficulty,
                         "model": parsed_action.model,
                         "instruction": parsed_action.instruction,
                         "submit_reason": parsed_action.submit_reason,
@@ -289,101 +414,107 @@ class MasOrchestraWorkflow(Workflow):
             )
 
             if request.model == self.main_model:
-                delegate_messages = self._build_delegate_messages(sample, memory, request.instruction)
-                delegate_output = await self.rollout_engine.get_model_response(
-                    delegate_messages,
-                    application_id=f"{uid}:delegate:{attempt_idx}",
-                    temperature=self.temperature_sub,
-                    **kwargs,
+                delegate_result = await run_local_delegate(
+                    request,
+                    attempt_idx=attempt_idx,
+                    requested_model=request.model,
                 )
-                delegate_policy_calls += 1
-                record_model_call(self.main_model)
-                delegate_text = delegate_output.content or delegate_output.text or ""
-                delegate_result = build_delegate_result(
-                    delegate_text,
-                    input_tokens=len(delegate_output.prompt_ids or []),
-                    output_tokens=len(delegate_output.completion_ids or []),
-                )
-                delegate_step_log = {
-                    "uid": uid,
-                    "task_id": sample.task_id,
-                    "question": sample.question,
-                    "step_type": "delegate_local",
-                    "step_index": step_index,
-                    "attempt_index": attempt_idx,
-                    "model": request.model,
-                    "instruction": request.instruction,
-                    "messages": [_sanitize_message(message) for message in delegate_messages],
-                    "raw_output": delegate_text,
-                    "finish_reason": delegate_output.finish_reason,
-                    "delegate_result": {
-                        "raw_answer_text": delegate_result.raw_answer_text,
-                        "boxed_letter": delegate_result.boxed_letter,
-                        "confidence": delegate_result.confidence,
-                        "reasoning_summary": delegate_result.reasoning_summary,
-                        "parse_ok": delegate_result.parse_ok,
-                        "error": delegate_result.error,
-                        "input_tokens": delegate_result.input_tokens,
-                        "output_tokens": delegate_result.output_tokens,
-                    },
-                }
-                step_logs.append(delegate_step_log)
-                write_step_log(delegate_step_log, step_index=step_index, step_type="delegate_local", uid=uid, path=self.step_log_root)
-                step_index += 1
-                delegate_step = Step.from_model_output(
-                    delegate_output,
-                    messages=delegate_messages,
-                    action=Action(
-                        action={
-                            "action": "self_think",
-                            "model": request.model,
-                            "instruction": request.instruction,
-                        }
-                    ),
-                )
-                trajectory.steps.append(delegate_step)
-                if delegate_output.finish_reason == "length":
-                    termination_reason = TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED
+                if termination_reason == TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED:
                     break
             else:
                 external_delegate_calls += 1
                 record_model_call(request.model)
-                delegate_result = await self.sub_model_client.run(request)
-                delegate_step_log = {
-                    "uid": uid,
-                    "task_id": sample.task_id,
-                    "question": sample.question,
-                    "step_type": "delegate_external",
-                    "step_index": step_index,
-                    "attempt_index": attempt_idx,
-                    "model": request.model,
-                    "instruction": request.instruction,
-                    "request": {
-                        "task_id": request.task_id,
-                        "question": request.question,
-                        "options": request.options,
-                        "prior_attempt_count": len(request.prior_attempts),
-                        "image_count": len(request.images),
-                    },
-                    "delegate_result": {
-                        "raw_answer_text": delegate_result.raw_answer_text,
-                        "boxed_letter": delegate_result.boxed_letter,
-                        "confidence": delegate_result.confidence,
-                        "reasoning_summary": delegate_result.reasoning_summary,
-                        "parse_ok": delegate_result.parse_ok,
-                        "error": delegate_result.error,
-                        "input_tokens": delegate_result.input_tokens,
-                        "output_tokens": delegate_result.output_tokens,
-                    },
-                }
-                step_logs.append(delegate_step_log)
-                write_step_log(delegate_step_log, step_index=step_index, step_type="delegate_external", uid=uid, path=self.step_log_root)
-                step_index += 1
+                delegate_messages = self._build_delegate_messages(sample, memory, request.instruction)
+                try:
+                    delegate_result = await self.sub_model_client.run(request)
+                except Exception as exc:
+                    api_error = f"{type(exc).__name__}: {exc}"
+                    delegate_step_log = {
+                        "uid": uid,
+                        "task_id": sample.task_id,
+                        "question": sample.question,
+                        "step_type": "delegate_external_error",
+                        "step_index": step_index,
+                        "attempt_index": attempt_idx,
+                        "model": request.model,
+                        "delegate_model_requested": request.model,
+                        "delegate_model_effective": None,
+                        "provider_model": None,
+                        "instruction": request.instruction,
+                        "messages": [_sanitize_message(message) for message in delegate_messages],
+                        "request": {
+                            "task_id": request.task_id,
+                            "question": request.question,
+                            "options": request.options,
+                            "prior_attempt_count": len(request.prior_attempts),
+                            "image_count": len(request.images),
+                        },
+                        "raw_output": "",
+                        "finish_reason": "error",
+                        "delegate_result": None,
+                        "api_call": True,
+                        "api_error": api_error,
+                        "fallback_to_local": True,
+                    }
+                    step_logs.append(delegate_step_log)
+                    persist_rollout_log()
+                    step_index += 1
+                    fallback_request = build_delegate_request(
+                        sample,
+                        memory.attempts,
+                        self.main_model,
+                        request.instruction,
+                    )
+                    delegate_result = await run_local_delegate(
+                        fallback_request,
+                        attempt_idx=attempt_idx,
+                        requested_model=request.model,
+                        step_type="delegate_local_fallback",
+                        api_error=api_error,
+                    )
+                    if termination_reason == TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED:
+                        break
+                else:
+                    delegate_step_log = {
+                        "uid": uid,
+                        "task_id": sample.task_id,
+                        "question": sample.question,
+                        "step_type": "delegate_external",
+                        "step_index": step_index,
+                        "attempt_index": attempt_idx,
+                        "model": request.model,
+                        "delegate_model_requested": request.model,
+                        "delegate_model_effective": delegate_result.provider_model or request.model,
+                        "provider_model": delegate_result.provider_model or request.model,
+                        "instruction": request.instruction,
+                        "messages": [_sanitize_message(message) for message in delegate_messages],
+                        "request": {
+                            "task_id": request.task_id,
+                            "question": request.question,
+                            "options": request.options,
+                            "prior_attempt_count": len(request.prior_attempts),
+                            "image_count": len(request.images),
+                        },
+                        "raw_output": delegate_result.raw_answer_text,
+                        "finish_reason": "external_api",
+                        "delegate_result": delegate_result_to_log(delegate_result),
+                        "api_call": True,
+                    }
+                    step_logs.append(delegate_step_log)
+                    persist_rollout_log()
+                    step_index += 1
+                    if delegate_result.budget_exceeded:
+                        persist_rollout_log(status="budget_exceeded")
+                        raise ExternalCostBudgetExceeded(
+                            total_cost=float(delegate_result.running_total_cost or 0.0),
+                            budget=float(delegate_result.cost_budget or 0.0),
+                            model=delegate_result.provider_model or request.model,
+                        )
 
             memory.add_attempt(
                 AttemptRecord(
                     attempt_index=attempt_idx,
-                    model=request.model,
+                    model=delegate_result.provider_model or request.model,
                     instruction=request.instruction,
                     delegate_result=delegate_result,
                     main_reasoning=parsed_action.reasoning,
@@ -429,9 +560,11 @@ class MasOrchestraWorkflow(Workflow):
                 "submit_reason": submit_result["reason"],
             }
         )
+        persist_rollout_log(status="completed")
         episode.metadata.update(
             {
-                "step_log_dir": str(_resolve_step_log_dir(self.step_log_root)),
+                "rollout_log_dir": str(_resolve_step_log_dir(self.step_log_root)),
+                "rollout_log_path": str(rollout_log_path(task_id=sample.task_id, uid=uid, path=self.step_log_root)),
                 "step_log_count": step_index,
                 "final_answer_text": submit_result["final_answer_text"],
                 "final_boxed_letter": submit_result["final_boxed_letter"],

@@ -3,6 +3,8 @@ import math
 import threading
 import uuid
 from collections import Counter, defaultdict
+
+from rllm.exceptions import ExternalCostBudgetExceeded
 from functools import reduce
 from pprint import pprint
 
@@ -188,7 +190,18 @@ class AgentWorkflowPPOTrainer(RayPPOTrainer):
 
                 with marked_timer("step", timing_raw):
                     # generate trajectories
-                    final_gen_batch_output = self.generate_trajectories(batch=new_batch, timing_raw=timing_raw)
+                    try:
+                        final_gen_batch_output = self.generate_trajectories(batch=new_batch, timing_raw=timing_raw)
+                    except ExternalCostBudgetExceeded as exc:
+                        print(f"API cost budget exceeded during rollout generation: total_cost={exc.total_cost:.6f}, budget={exc.budget:.6f}. Saving checkpoint and stopping training.")
+                        logger.log(data={"budget/total_cost": exc.total_cost, "budget/limit": exc.budget, "training/global_step": self.global_steps, "training/epoch": epoch}, step=self.global_steps)
+                        with marked_timer("save_checkpoint", timing_raw, color="green"):
+                            self._save_checkpoint()
+                        try:
+                            logger.finish()
+                        except Exception:
+                            pass
+                        return
 
                     # need to repeat to make shape match
                     repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]

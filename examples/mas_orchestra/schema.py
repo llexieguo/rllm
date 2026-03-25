@@ -37,6 +37,11 @@ class DelegateResult:
     cost: float
     input_tokens: int = 0
     output_tokens: int = 0
+    provider_model: str | None = None
+    response_id: str | None = None
+    running_total_cost: float | None = None
+    cost_budget: float | None = None
+    budget_exceeded: bool = False
 
 
 @dataclass
@@ -52,6 +57,8 @@ class SubmitResult:
 class MainAction:
     action: str
     reasoning: str
+    task_type: str | None = None
+    difficulty: str | None = None
     model: str | None = None
     instruction: str | None = None
     submit_reason: str | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import hydra
@@ -11,6 +12,23 @@ from rllm.trainer.agent_trainer import AgentTrainer
 
 def default_workflow_args() -> dict:
     return dict(DEFAULT_WORKFLOW_ARGS)
+
+
+def _env_sub_models() -> list[str] | None:
+    raw = os.environ.get("MAS_ORCHESTRA_SUB_MODELS_JSON")
+    if raw:
+        values = json.loads(raw)
+        if not isinstance(values, list):
+            raise ValueError("MAS_ORCHESTRA_SUB_MODELS_JSON must decode to a list of model names")
+        sub_models = [str(value).strip() for value in values if str(value).strip()]
+        return sub_models or None
+
+    raw = os.environ.get("MAS_ORCHESTRA_SUB_MODELS")
+    if not raw:
+        return None
+
+    sub_models = [line.strip() for line in raw.splitlines() if line.strip()]
+    return sub_models or None
 
 
 def _disable_validation(config, train_dataset=None) -> None:
@@ -41,6 +59,24 @@ def _expand_model_paths(config) -> None:
     if critic_model is not None and getattr(critic_model, "path", None):
         critic_model.path = os.path.expanduser(critic_model.path)
 
+
+
+def _configure_external_api_defaults(workflow_args: dict) -> None:
+    configured_sub_models = _env_sub_models()
+    if configured_sub_models is not None:
+        workflow_args["sub_models"] = configured_sub_models
+
+    has_external_api = bool(os.environ.get("MAS_ORCHESTRA_API_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or os.environ.get("base_url"))
+    if not has_external_api:
+        return
+
+    workflow_args["mock_external_submodels"] = False
+    main_model = str(workflow_args.get("main_model", "local-policy"))
+    sub_models = [str(model) for model in workflow_args.get("sub_models", [])]
+    sub_models = [model for model in sub_models if model != main_model]
+    if not sub_models:
+        sub_models = ["remote-submodel"]
+    workflow_args["sub_models"] = sub_models
 
 
 def _tune_small_dataset_defaults(config, train_dataset) -> None:
@@ -74,6 +110,7 @@ def build_trainer(config, *, dataset_name: str = DEFAULT_DATASET_NAME, workflow_
     resolved_workflow_args = default_workflow_args()
     if workflow_args:
         resolved_workflow_args.update(workflow_args)
+    _configure_external_api_defaults(resolved_workflow_args)
     if getattr(config, "rllm", None) is not None:
         if getattr(config.rllm, "stepwise_advantage", None) is not None:
             config.rllm.stepwise_advantage.enable = True

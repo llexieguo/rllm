@@ -7,11 +7,12 @@ from examples.mas_orchestra.schema import AttemptRecord, ReasoningSample
 def build_model_pricing_table(sub_models: list[str]) -> str:
     lines = ["| Model | Input $/1K | Output $/1K |", "|---|---:|---:|"]
     for model_name in sub_models:
+        label = ModelPricing.format_model_label(model_name)
         pricing = ModelPricing.resolve_pricing(model_name)
         if pricing is None:
-            lines.append(f"| {model_name} | N/A | N/A |")
+            lines.append(f"| {label} | N/A | N/A |")
         else:
-            lines.append(f"| {model_name} | ${pricing['input']:.5f} | ${pricing['output']:.5f} |")
+            lines.append(f"| {label} | ${pricing['input']:.5f} | ${pricing['output']:.5f} |")
     return "\n".join(lines)
 
 
@@ -33,17 +34,84 @@ You MUST choose one action each turn:
 2) submit
 
 DECISION PROCESS:
-1. Review attempt history and identify what remains unresolved.
-2. If the best boxed answer is valid and confidence >= {threshold:.2f}, prefer submit.
-3. Otherwise delegate only the unresolved part.
+1. REVIEW attempt history and identify what failed vs. what was resolved.
+2. EVALUATE answer validity:
+   - If boxed answer is missing or invalid, continue with delegate_task.
+   - If boxed answer is valid and confidence >= {threshold:.2f}, prefer submit.
+3. DECIDE next action:
+   - submit only when evidence is sufficient.
+   - delegate_task only for the remaining uncertainty; do not repeat solved parts.
 
 BUDGET AWARENESS:
 - Attempts are limited, so each delegation has a cost.
-- Choose cheaper models for simple checks.
-- Choose stronger models for complex or final checks.
+- Choose cheaper models for simpler reasoning checks.
+- Choose stronger models for complex reasoning or critical attempts.
 
-MODEL PRICING:
+MODEL PRICING (configured sub-models):
 {pricing_table}
+
+TASK TYPE IDENTIFICATION (MANDATORY):
+Before selecting a model, classify the REMAINING task type.
+
+Possible task types:
+
+CALCULATION
+- mathematical derivation
+- equation solving
+- symbolic or numeric computation
+- unit conversion or formula application
+
+SCI_REASONING
+- multi-step scientific reasoning
+- conceptual reasoning involving physics, chemistry, or biology
+- hypothesis evaluation
+- reasoning involving multiple scientific assumptions
+
+VISION_REASONING
+- interpreting diagrams, charts, or experimental figures
+- extracting spatial or visual relationships
+- multimodal reasoning combining text and image evidence
+
+Focus only on the remaining uncertainty that still needs to be resolved.
+
+DIFFICULTY ESTIMATION (MANDATORY):
+After identifying the task type, classify the REMAINING work as EASY / MEDIUM / HARD.
+
+EASY:
+- straightforward computation with clear formula
+- direct reasoning from already consistent evidence
+
+MEDIUM:
+- multi-step reasoning with moderate ambiguity
+- calculation involving multiple intermediate steps
+- visual interpretation with relatively clear evidence
+
+HARD:
+- ambiguous or noisy multimodal evidence
+- complex reasoning with multiple uncertain assumptions
+- prior attempts show disagreement or repeated wrong reasoning direction
+- final attempt where reliability is critical
+
+MODEL SELECTION POLICY:
+
+Model selection should consider:
+1) task type
+2) task difficulty
+3) model cost
+
+Task-type guidance:
+- CALCULATION tasks benefit from models that are strong at mathematical or symbolic reasoning.
+- SCI_REASONING tasks usually require the strongest reasoning models.
+- VISION_REASONING tasks should prefer models with multimodal capability.
+
+Difficulty adjustment:
+- EASY -> default to lower-cost model.
+- MEDIUM -> choose a balanced model.
+- HARD -> default to the strongest available model.
+
+Failure-aware adjustment:
+- If previous failure is mainly reasoning quality, upshift to stronger model.
+- If reasoning direction repeatedly fails, switch to a stronger or different model.
 
 Task:
 Question: {sample.question}
@@ -59,10 +127,12 @@ Available sub-models: {sub_models}
 Output JSON only:
 {{
   "action": "delegate_task|submit",
-  "reasoning": "short rationale tied to remaining uncertainty",
+  "task_type": "CALCULATION|SCI_REASONING|VISION_REASONING",
+  "difficulty": "EASY|MEDIUM|HARD",
+  "reasoning": "short rationale tied to attempt history explaining remaining uncertainty",
   "model": "one of available sub-models (required if delegate_task)",
-  "instruction": "specific reflection instruction (required if delegate_task)",
-  "submit_reason": "why the evidence is enough to finalize (required if submit)"
+  "instruction": "specific reflection instruction describing what to verify next (required if delegate_task)",
+  "submit_reason": "why current evidence is enough to finalize (required if submit)"
 }}
 """.strip()
 
