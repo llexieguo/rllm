@@ -82,3 +82,23 @@ class WorkflowMetrics:
     external_delegate_calls: int
     models_used: list[str] = field(default_factory=list)
     model_usage: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class OfflineReplayStepSpec:
+    messages: list[dict[str, Any]]
+    response: str
+    step_reward: float
+    trainable: bool
+    step_type: str | None = None
+    model: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OfflineReplaySample:
+    task_id: str
+    data_source: str | None
+    is_correct: bool | None
+    trajectory_reward: float
+    steps: list[OfflineReplayStepSpec]

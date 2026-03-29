@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
+from examples.mas_orchestra.offline_workflow import OfflineMasOrchestraReplayWorkflow
 from examples.mas_orchestra.test_workflow import FakeRolloutEngine, build_task, make_output
+from examples.mas_orchestra.train_offline_mas_orchestra import build_trainer as build_offline_trainer
 from examples.mas_orchestra.train_mas_orchestra import build_trainer
 from examples.mas_orchestra.workflow import MasOrchestraWorkflow
 from rllm.data import Dataset
@@ -136,6 +138,64 @@ def test_build_trainer_disables_validation_when_val_split_is_missing(monkeypatch
     assert config.trainer.val_only is False
     assert config.trainer.test_freq == -1
     assert config.data.val_files == fake_train_dataset.get_verl_data_path()
+
+
+def test_build_offline_trainer_configures_reinforce_replay_defaults(monkeypatch):
+    fake_train_dataset = Dataset([{"task_id": "t1"}], name="mock", split="train")
+    fake_val_dataset = Dataset([{"task_id": "t2"}], name="mock", split="val")
+
+    def fake_load_dataset(name: str, split: str):
+        if split == "train":
+            return fake_train_dataset
+        if split == "val":
+            return fake_val_dataset
+        return None
+
+    monkeypatch.setattr("examples.mas_orchestra.train_offline_mas_orchestra.DatasetRegistry.load_dataset", fake_load_dataset)
+
+    config = OmegaConf.create(
+        {
+            "trainer": {"project_name": "demo", "val_before_train": True, "val_only": True, "test_freq": 5},
+            "data": {"train_batch_size": 1024, "val_files": "dummy"},
+            "algorithm": {"adv_estimator": "gae"},
+            "actor_rollout_ref": {
+                "actor": {"ppo_mini_batch_size": 256},
+                "rollout": {"n": 8, "val_kwargs": {"n": 4}},
+                "model": {"path": "~/actor-model"},
+            },
+            "critic": {"model": {"path": "~/critic-model"}},
+            "rllm": {
+                "workflow": {"use_workflow": False},
+                "stepwise_advantage": {"enable": False, "mode": "broadcast"},
+            },
+        }
+    )
+    trainer = build_offline_trainer(
+        config,
+        dataset_name="mock-dataset",
+        workflow_args={"trajectory_bonus_weight": 0.25},
+        trainer_cls=FakeAgentTrainer,
+    )
+
+    assert trainer.kwargs["backend"] == "verl"
+    assert trainer.kwargs["workflow_class"] is OfflineMasOrchestraReplayWorkflow
+    assert trainer.kwargs["train_dataset"] is fake_train_dataset
+    assert trainer.kwargs["val_dataset"] is None
+    assert trainer.kwargs["workflow_args"]["trajectory_bonus_weight"] == 0.25
+    assert config.algorithm.adv_estimator == "reinforce"
+    assert config.actor_rollout_ref.model.path.endswith("/actor-model")
+    assert config.critic.model.path.endswith("/critic-model")
+    assert config.rllm.workflow.use_workflow is True
+    assert config.rllm.stepwise_advantage.enable is True
+    assert config.rllm.stepwise_advantage.mode == "per_step"
+    assert config.actor_rollout_ref.rollout.n == 1
+    assert config.actor_rollout_ref.rollout.val_kwargs.n == 1
+    assert config.trainer.val_before_train is False
+    assert config.trainer.val_only is False
+    assert config.trainer.test_freq == -1
+    assert config.data.val_files is None
+    assert config.data.train_batch_size == 1
+    assert config.actor_rollout_ref.actor.ppo_mini_batch_size == 1
 
 
 @dataclass
