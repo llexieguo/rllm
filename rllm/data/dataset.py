@@ -17,23 +17,50 @@ def serialize_verl_extra_info(value: Any) -> str:
     return _VERL_EXTRA_INFO_PREFIX + base64.b64encode(payload).decode("ascii")
 
 
+def _normalize_verl_extra_info(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _normalize_verl_extra_info(item) for key, item in value.items()}
+
+    if isinstance(value, list | tuple):
+        return [_normalize_verl_extra_info(item) for item in value]
+
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return value
+
+    if type(value).__module__.startswith("numpy") and hasattr(value, "tolist"):
+        try:
+            return _normalize_verl_extra_info(value.tolist())
+        except Exception:
+            return value
+
+    if hasattr(value, "item"):
+        try:
+            item = value.item()
+        except Exception:
+            item = value
+        if item is not value:
+            return _normalize_verl_extra_info(item)
+
+    return value
+
+
 def deserialize_verl_extra_info(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith(_VERL_EXTRA_INFO_PREFIX):
             payload = base64.b64decode(value[len(_VERL_EXTRA_INFO_PREFIX) :])
-            return pickle.loads(payload)
+            return _normalize_verl_extra_info(pickle.loads(payload))
         try:
-            return json.loads(value)
+            return _normalize_verl_extra_info(json.loads(value))
         except Exception:
             return value
 
     if isinstance(value, (bytes, bytearray, memoryview)):
         try:
-            return pickle.loads(bytes(value))
+            return _normalize_verl_extra_info(pickle.loads(bytes(value)))
         except Exception:
             return value
 
-    return value
+    return _normalize_verl_extra_info(value)
 
 
 class Dataset:
@@ -749,7 +776,7 @@ class DatasetRegistry:
                     "style": "rule",
                     "ground_truth": None,
                 },
-                "extra_info": serialize_verl_extra_info(entry),
+                "extra_info": _normalize_verl_extra_info(entry),
             }
             processed_data.append(processed_entry)
         return processed_data
