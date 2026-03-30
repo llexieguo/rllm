@@ -156,7 +156,7 @@ def test_build_offline_trainer_configures_reinforce_replay_defaults(monkeypatch)
     config = OmegaConf.create(
         {
             "trainer": {"project_name": "demo", "val_before_train": True, "val_only": True, "test_freq": 5},
-            "data": {"train_batch_size": 1024, "val_files": "dummy"},
+            "data": {"train_batch_size": 1024, "val_files": "dummy", "custom_cls": {"path": None, "name": None}},
             "algorithm": {"adv_estimator": "gae"},
             "actor_rollout_ref": {
                 "actor": {"ppo_mini_batch_size": 256},
@@ -190,6 +190,8 @@ def test_build_offline_trainer_configures_reinforce_replay_defaults(monkeypatch)
     assert config.rllm.stepwise_advantage.mode == "per_step"
     assert config.actor_rollout_ref.rollout.n == 1
     assert config.actor_rollout_ref.rollout.val_kwargs.n == 1
+    assert config.data.custom_cls.path == "pkg://rllm.trainer.verl.local_parquet_rl_dataset"
+    assert config.data.custom_cls.name == "LocalParquetRLHFDataset"
     assert config.trainer.val_before_train is False
     assert config.trainer.val_only is False
     assert config.trainer.test_freq == -1

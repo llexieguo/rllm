@@ -4,9 +4,11 @@ import json
 
 import pandas as pd
 import pytest
+from omegaconf import OmegaConf
 
 from examples.mas_orchestra.prepare_offline_replay_dataset import prepare_offline_replay_dataset
 from rllm.data.dataset import DatasetRegistry, deserialize_verl_extra_info
+from rllm.trainer.verl.local_parquet_rl_dataset import LocalParquetRLHFDataset
 
 
 def configure_registry(tmp_path, monkeypatch):
@@ -73,6 +75,20 @@ def test_prepare_offline_replay_dataset_registers_local_splits(tmp_path, monkeyp
     decoded = deserialize_verl_extra_info(verl_row["extra_info"])
     assert decoded["task_id"] == "t1"
     assert decoded["steps"][0]["messages"][0]["content"] == "Question t1"
+
+    dataset = LocalParquetRLHFDataset(
+        data_files=verl_path,
+        tokenizer=None,
+        config=OmegaConf.create(
+            {
+                "cache_dir": str(tmp_path / "cache"),
+                "filter_overlong_prompts": False,
+                "return_multi_modal_inputs": False,
+            }
+        ),
+    )
+    assert len(dataset) == 2
+    assert dataset.dataframe[0]["extra_info"]["__rllm_payload__"].startswith("pickle_b64:")
 
 
 def test_prepare_offline_replay_dataset_rejects_missing_row_field(tmp_path, monkeypatch):

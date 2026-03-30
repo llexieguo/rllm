@@ -61,6 +61,11 @@ def _configure_offline_rllm_defaults(config) -> None:
         if getattr(rollout_cfg, "val_kwargs", None) is not None:
             rollout_cfg.val_kwargs.n = 1
 
+    data_cfg = getattr(config, "data", None)
+    if data_cfg is not None and getattr(data_cfg, "custom_cls", None) is not None:
+        data_cfg.custom_cls.path = "pkg://rllm.trainer.verl.local_parquet_rl_dataset"
+        data_cfg.custom_cls.name = "LocalParquetRLHFDataset"
+
 
 def _expand_model_paths(config) -> None:
     actor_model = getattr(getattr(config, "actor_rollout_ref", None), "model", None)
