@@ -478,10 +478,6 @@ class DatasetRegistry:
         if os.path.exists(verl_dataset_path):
             os.remove(verl_dataset_path)
 
-        verl_jsonl_path = cls._verl_jsonl_path_for(verl_dataset_path.replace("_verl.parquet", ".parquet"))
-        if os.path.exists(verl_jsonl_path):
-            os.remove(verl_jsonl_path)
-
         shard_dir = cls._verl_shard_dir_for(verl_dataset_path)
         if os.path.isdir(shard_dir):
             shutil.rmtree(shard_dir)
@@ -566,8 +562,8 @@ class DatasetRegistry:
             stripped = cls._strip_binary_columns(data_list, bin_cols)
             verl_data = cls.apply_verl_postprocessing(stripped)
             verl_dataset_path = cls._verl_path_for(dataset_path)
-            cls._write_verl_jsonl(verl_data, verl_dataset_path)
             cls._write_verl_parquet(verl_data, verl_dataset_path)
+            cls._write_verl_jsonl(verl_data, verl_dataset_path)
 
             fields = list(data_list[0].keys()) if data_list else []
         else:
@@ -580,8 +576,8 @@ class DatasetRegistry:
             # Apply Verl postprocessing and save
             verl_data = cls.apply_verl_postprocessing(data_list)
             verl_dataset_path = cls._verl_path_for(dataset_path)
-            cls._write_verl_jsonl(verl_data, verl_dataset_path)
             cls._write_verl_parquet(verl_data, verl_dataset_path)
+            cls._write_verl_jsonl(verl_data, verl_dataset_path)
 
             fields = list(data_df.columns)
 

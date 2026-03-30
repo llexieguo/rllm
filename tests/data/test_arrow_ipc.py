@@ -172,6 +172,21 @@ class TestVerlPathFromArrow:
         assert verl_path.endswith("_verl.jsonl")
         assert os.path.exists(verl_path)
 
+    def test_write_verl_parquet_preserves_existing_jsonl(self, tmp_rllm_home):
+        data = [{"question": "hi", "answer": "42"}]
+        ds = DatasetRegistry.register_dataset("preserve_verl_jsonl", data, split="test")
+        data_path = ds.get_data_path()
+        assert data_path is not None
+
+        verl_parquet_path = DatasetRegistry._verl_path_for(data_path)
+        verl_jsonl_path = DatasetRegistry._verl_jsonl_path_for(data_path)
+        assert os.path.exists(verl_jsonl_path)
+
+        DatasetRegistry._write_verl_parquet(DatasetRegistry.apply_verl_postprocessing(data), verl_parquet_path)
+
+        assert os.path.exists(verl_parquet_path)
+        assert os.path.exists(verl_jsonl_path)
+
 
 # ---------------------------------------------------------------------------
 # strip binary columns
