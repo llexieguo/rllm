@@ -155,3 +155,30 @@ def test_local_parquet_rlhf_dataset_reads_nested_multi_row_group_parquet(tmp_pat
 
     assert len(dataset) == 5
     assert dataset.dataframe[0]["extra_info"]["__rllm_payload__"].startswith("pickle_b64:")
+
+
+def test_local_parquet_rlhf_dataset_falls_back_to_pandas_for_nested_parquet(tmp_path, monkeypatch):
+    rows = DatasetRegistry.apply_verl_postprocessing([build_row("fallback")])
+    parquet_path = tmp_path / "nested_fallback.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), parquet_path, row_group_size=1)
+
+    monkeypatch.setattr(
+        LocalParquetRLHFDataset,
+        "_rows_from_pyarrow",
+        classmethod(lambda cls, parquet_file: (_ for _ in ()).throw(RuntimeError("force pandas fallback"))),
+    )
+
+    dataset = LocalParquetRLHFDataset(
+        data_files=str(parquet_path),
+        tokenizer=None,
+        config=OmegaConf.create(
+            {
+                "cache_dir": str(tmp_path / "cache"),
+                "filter_overlong_prompts": False,
+                "return_multi_modal_inputs": False,
+            }
+        ),
+    )
+
+    assert len(dataset) == 1
+    assert dataset.dataframe[0]["prompt"][0]["role"] == "user"
