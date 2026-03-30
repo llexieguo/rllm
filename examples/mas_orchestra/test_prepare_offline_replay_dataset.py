@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 
 from examples.mas_orchestra.prepare_offline_replay_dataset import prepare_offline_replay_dataset
-from rllm.data.dataset import DatasetRegistry
+from rllm.data.dataset import DatasetRegistry, deserialize_verl_extra_info
 
 
 def configure_registry(tmp_path, monkeypatch):
@@ -64,6 +65,14 @@ def test_prepare_offline_replay_dataset_registers_local_splits(tmp_path, monkeyp
     loaded_train = DatasetRegistry.load_dataset("mas_offline_test", "train")
     assert loaded_train is not None
     assert loaded_train.get_data()[0]["steps"][0]["response"] == "answer"
+
+    verl_path = train_dataset.get_verl_data_path()
+    assert verl_path is not None
+    verl_row = pd.read_parquet(verl_path).iloc[0].to_dict()
+    assert verl_row["extra_info"].keys() == {"__rllm_payload__"}
+    decoded = deserialize_verl_extra_info(verl_row["extra_info"])
+    assert decoded["task_id"] == "t1"
+    assert decoded["steps"][0]["messages"][0]["content"] == "Question t1"
 
 
 def test_prepare_offline_replay_dataset_rejects_missing_row_field(tmp_path, monkeypatch):

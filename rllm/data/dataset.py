@@ -467,13 +467,16 @@ class DatasetRegistry:
 
     @classmethod
     def _write_verl_parquet(cls, verl_data: list[dict[str, Any]], verl_dataset_path: str) -> None:
-        import pandas as pd
+        import pyarrow as pa
+        import pyarrow.parquet as pq
 
         cls._cleanup_verl_outputs(verl_dataset_path)
-        verl_data_df = pd.DataFrame(verl_data)
 
         try:
-            verl_data_df.to_parquet(verl_dataset_path)
+            table = pa.Table.from_pylist(verl_data)
+            # Keep nested columns in a single row group to avoid pyarrow chunked-array
+            # conversion failures in some environments when VERL reads the file back.
+            pq.write_table(table, verl_dataset_path, row_group_size=max(len(verl_data), 1))
             return
         except Exception as exc:
             if type(exc).__name__ != "ArrowCapacityError":
@@ -483,9 +486,9 @@ class DatasetRegistry:
         os.makedirs(shard_dir, exist_ok=True)
         shard_size = 64
         for shard_idx, start in enumerate(range(0, len(verl_data), shard_size)):
-            shard_df = pd.DataFrame(verl_data[start : start + shard_size])
             shard_path = os.path.join(shard_dir, f"part-{shard_idx:05d}.parquet")
-            shard_df.to_parquet(shard_path)
+            shard_table = pa.Table.from_pylist(verl_data[start : start + shard_size])
+            pq.write_table(shard_table, shard_path, row_group_size=min(shard_size, len(verl_data) - start))
 
     @classmethod
     def register_dataset(cls, name: str, data: list[dict[str, Any]] | Any, split: str = "default", source: str = "", description: str = "", category: str = "") -> Dataset:
