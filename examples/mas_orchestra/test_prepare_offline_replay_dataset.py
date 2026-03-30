@@ -9,6 +9,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from examples.mas_orchestra.prepare_offline_replay_dataset import prepare_offline_replay_dataset
+from examples.mas_orchestra.offline_pipeline.prepare_offline_replay_dataset import main as prepare_offline_replay_main
 from rllm.data.dataset import DatasetRegistry, deserialize_verl_extra_info
 from rllm.trainer.verl.local_parquet_rl_dataset import LocalParquetRLHFDataset
 
@@ -93,6 +94,31 @@ def test_prepare_offline_replay_dataset_registers_local_splits(tmp_path, monkeyp
     )
     assert len(dataset) == 2
     assert dataset.dataframe[0]["extra_info"]["__rllm_payload__"].startswith("pickle_b64:")
+
+
+def test_prepare_offline_replay_dataset_main_prints_canonical_and_verl_paths(tmp_path, monkeypatch, capsys):
+    configure_registry(tmp_path, monkeypatch)
+    train_path = tmp_path / "train.jsonl"
+    write_jsonl(train_path, [build_row("t1")])
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prepare_offline_replay_dataset.py",
+            "--dataset-name",
+            "mas_offline_cli",
+            "--train-file",
+            str(train_path),
+        ],
+    )
+
+    prepare_offline_replay_main()
+    output = capsys.readouterr().out
+
+    assert "Train canonical dataset path:" in output
+    assert "Train VeRL dataset path:" in output
+    assert "train.parquet" in output
+    assert "train_verl.jsonl" in output
 
 
 def test_prepare_offline_replay_dataset_rejects_missing_row_field(tmp_path, monkeypatch):

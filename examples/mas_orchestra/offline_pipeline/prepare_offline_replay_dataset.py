@@ -50,9 +50,12 @@ def main() -> None:
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {0 if val_dataset is None else len(val_dataset)}")
     print(f"Test dataset size: {0 if test_dataset is None else len(test_dataset)}")
-    print(f"Train dataset path: {train_dataset.get_data_path()}")
-    print(f"Validation dataset path: {None if val_dataset is None else val_dataset.get_data_path()}")
-    print(f"Test dataset path: {None if test_dataset is None else test_dataset.get_data_path()}")
+    print(f"Train canonical dataset path: {train_dataset.get_data_path()}")
+    print(f"Train VeRL dataset path: {train_dataset.get_verl_data_path()}")
+    print(f"Validation canonical dataset path: {None if val_dataset is None else val_dataset.get_data_path()}")
+    print(f"Validation VeRL dataset path: {None if val_dataset is None else val_dataset.get_verl_data_path()}")
+    print(f"Test canonical dataset path: {None if test_dataset is None else test_dataset.get_data_path()}")
+    print(f"Test VeRL dataset path: {None if test_dataset is None else test_dataset.get_verl_data_path()}")
 
 
 if __name__ == "__main__":
