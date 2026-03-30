@@ -10,6 +10,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _VERL_EXTRA_INFO_PREFIX = "pickle_b64:"
+_VERL_EXTRA_INFO_PAYLOAD_KEY = "__rllm_payload__"
 
 
 def serialize_verl_extra_info(value: Any) -> str:
@@ -45,6 +46,9 @@ def _normalize_verl_extra_info(value: Any) -> Any:
 
 
 def deserialize_verl_extra_info(value: Any) -> Any:
+    if isinstance(value, dict) and _VERL_EXTRA_INFO_PAYLOAD_KEY in value:
+        return deserialize_verl_extra_info(value[_VERL_EXTRA_INFO_PAYLOAD_KEY])
+
     if isinstance(value, str):
         if value.startswith(_VERL_EXTRA_INFO_PREFIX):
             payload = base64.b64decode(value[len(_VERL_EXTRA_INFO_PREFIX) :])
@@ -776,7 +780,9 @@ class DatasetRegistry:
                     "style": "rule",
                     "ground_truth": None,
                 },
-                "extra_info": _normalize_verl_extra_info(entry),
+                "extra_info": {
+                    _VERL_EXTRA_INFO_PAYLOAD_KEY: serialize_verl_extra_info(entry),
+                },
             }
             processed_data.append(processed_entry)
         return processed_data
