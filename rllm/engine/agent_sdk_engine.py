@@ -18,6 +18,7 @@ except ImportError as err:
     raise ImportError("AgentSdkEngine requires extra dependencies. Install with: pip install rllm[train]") from err
 
 from rllm.agents.agent import Episode, Trajectory
+from rllm.data.dataset import deserialize_verl_extra_info
 from rllm.engine.rollout import ModelOutput, RolloutEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
 from rllm.sdk.data_process import group_steps, trace_to_step
@@ -450,7 +451,7 @@ class AgentSdkEngine:
 
         if batch.meta_info.get("validate", False):
             self.rollout_engine.validate = True
-        tasks = batch.non_tensor_batch["extra_info"].tolist()
+        tasks = [deserialize_verl_extra_info(task) for task in batch.non_tensor_batch["extra_info"].tolist()]
         task_ids = batch.non_tensor_batch["task_ids"].tolist()
         episodes = await self.execute_tasks(tasks, task_ids, **kwargs)  # list of Episodes
         self.rollout_engine.validate = False

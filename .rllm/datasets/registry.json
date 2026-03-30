@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "datasets": {
+    "sgi_reasoning_mas_orchestra_offline_replay": {
+      "metadata": {
+        "source": "/home/xianglu/gjr/mas_orchestra/results/mcts/run_20260328_132306/mas_orchestra_offline_replay_all.parquet",
+        "description": "MAS Orchestra offline replay data from /home/xianglu/gjr/mas_orchestra/results/mcts/run_20260328_132306/mas_orchestra_offline_replay_all.parquet.",
+        "category": "offline-replay"
+      },
+      "splits": {
+        "train": {
+          "path": "sgi_reasoning_mas_orchestra_offline_replay/train.parquet",
+          "num_examples": 784,
+          "fields": [
+            "task_id",
+            "data_source",
+            "is_correct",
+            "trajectory_reward",
+            "steps"
+          ]
+        }
+      }
+    }
+  }
+}

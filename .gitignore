@@ -222,3 +222,6 @@ gcp-key.json
 
 # IDE
 .vscode/
+
+
+data/

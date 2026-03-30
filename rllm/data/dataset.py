@@ -1,10 +1,39 @@
+import base64
+import glob
 import json
 import logging
 import os
+import pickle
 import shutil
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_VERL_EXTRA_INFO_PREFIX = "pickle_b64:"
+
+
+def serialize_verl_extra_info(value: Any) -> str:
+    payload = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    return _VERL_EXTRA_INFO_PREFIX + base64.b64encode(payload).decode("ascii")
+
+
+def deserialize_verl_extra_info(value: Any) -> Any:
+    if isinstance(value, str):
+        if value.startswith(_VERL_EXTRA_INFO_PREFIX):
+            payload = base64.b64decode(value[len(_VERL_EXTRA_INFO_PREFIX) :])
+            return pickle.loads(payload)
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        try:
+            return pickle.loads(bytes(value))
+        except Exception:
+            return value
+
+    return value
 
 
 class Dataset:
@@ -122,12 +151,13 @@ class Dataset:
         if data_path is None:
             return None
 
-        # .arrow files store the verl companion as _verl.parquet
-        if data_path.endswith(".arrow"):
-            verl_path = data_path[: -len(".arrow")] + "_verl.parquet"
-        else:
-            verl_path = data_path.replace(".parquet", "_verl.parquet")
-        return verl_path if os.path.exists(verl_path) else None
+        verl_path = DatasetRegistry._verl_path_for(data_path)
+        if os.path.exists(verl_path):
+            return verl_path
+
+        shard_dir = DatasetRegistry._verl_shard_dir_for(verl_path)
+        shard_paths = sorted(glob.glob(os.path.join(shard_dir, "*.parquet")))
+        return shard_paths if shard_paths else None
 
     @classmethod
     def load_data(cls, path: str) -> "Dataset":
@@ -161,9 +191,14 @@ class Dataset:
 
             data = pd.read_csv(path).to_dict("records")
         elif file_ext == ".parquet":
-            import pandas as pd
+            try:
+                import polars as pl
 
-            data = pd.read_parquet(path).to_dict("records")
+                data = pl.read_parquet(path).to_dicts()
+            except ImportError:
+                import pandas as pd
+
+                data = pd.read_parquet(path).to_dict("records")
         elif file_ext == ".arrow":
             data = DatasetRegistry._load_arrow_ipc(path)
         else:
@@ -385,6 +420,43 @@ class DatasetRegistry:
         return dataset_path.replace(".parquet", "_verl.parquet")
 
     @classmethod
+    def _verl_shard_dir_for(cls, verl_dataset_path: str) -> str:
+        if verl_dataset_path.endswith(".parquet"):
+            return verl_dataset_path[: -len(".parquet")] + "_shards"
+        return verl_dataset_path + "_shards"
+
+    @classmethod
+    def _cleanup_verl_outputs(cls, verl_dataset_path: str) -> None:
+        if os.path.exists(verl_dataset_path):
+            os.remove(verl_dataset_path)
+
+        shard_dir = cls._verl_shard_dir_for(verl_dataset_path)
+        if os.path.isdir(shard_dir):
+            shutil.rmtree(shard_dir)
+
+    @classmethod
+    def _write_verl_parquet(cls, verl_data: list[dict[str, Any]], verl_dataset_path: str) -> None:
+        import pandas as pd
+
+        cls._cleanup_verl_outputs(verl_dataset_path)
+        verl_data_df = pd.DataFrame(verl_data)
+
+        try:
+            verl_data_df.to_parquet(verl_dataset_path)
+            return
+        except Exception as exc:
+            if type(exc).__name__ != "ArrowCapacityError":
+                raise
+
+        shard_dir = cls._verl_shard_dir_for(verl_dataset_path)
+        os.makedirs(shard_dir, exist_ok=True)
+        shard_size = 64
+        for shard_idx, start in enumerate(range(0, len(verl_data), shard_size)):
+            shard_df = pd.DataFrame(verl_data[start : start + shard_size])
+            shard_path = os.path.join(shard_dir, f"part-{shard_idx:05d}.parquet")
+            shard_df.to_parquet(shard_path)
+
+    @classmethod
     def register_dataset(cls, name: str, data: list[dict[str, Any]] | Any, split: str = "default", source: str = "", description: str = "", category: str = "") -> Dataset:
         """Register a dataset by saving it to disk and updating the registry.
 
@@ -429,8 +501,7 @@ class DatasetRegistry:
             stripped = cls._strip_binary_columns(data_list, bin_cols)
             verl_data = cls.apply_verl_postprocessing(stripped)
             verl_dataset_path = cls._verl_path_for(dataset_path)
-            verl_data_df = pd.DataFrame(verl_data)
-            verl_data_df.to_parquet(verl_dataset_path)
+            cls._write_verl_parquet(verl_data, verl_dataset_path)
 
             fields = list(data_list[0].keys()) if data_list else []
         else:
@@ -443,8 +514,7 @@ class DatasetRegistry:
             # Apply Verl postprocessing and save
             verl_data = cls.apply_verl_postprocessing(data_list)
             verl_dataset_path = cls._verl_path_for(dataset_path)
-            verl_data_df = pd.DataFrame(verl_data)
-            verl_data_df.to_parquet(verl_dataset_path)
+            cls._write_verl_parquet(verl_data, verl_dataset_path)
 
             fields = list(data_df.columns)
 
@@ -679,7 +749,7 @@ class DatasetRegistry:
                     "style": "rule",
                     "ground_truth": None,
                 },
-                "extra_info": entry,
+                "extra_info": serialize_verl_extra_info(entry),
             }
             processed_data.append(processed_entry)
         return processed_data

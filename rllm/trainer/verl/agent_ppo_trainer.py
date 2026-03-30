@@ -27,6 +27,7 @@ from verl.trainer.ppo.utils import Role, WorkerType
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
 
+from rllm.data.dataset import deserialize_verl_extra_info
 from rllm.engine.agent_execution_engine import AsyncAgentExecutionEngine
 
 
@@ -92,14 +93,12 @@ class AgentPPOTrainer(RayPPOTrainer):
         Initialize environment depending on env_class with the necessary extra_info, also set uid of the batch.
         """
         assert self.agent_class is not None and self.env_class is not None, "Agent and environment classes must be provided"
-        env_args = batch.non_tensor_batch["extra_info"].tolist()
+        env_args = [deserialize_verl_extra_info(arg) for arg in batch.non_tensor_batch["extra_info"].tolist()]
 
         full_agent_args = dict(self.config.rllm.agent.get("agent_args", {})) | self.agent_args
         base_env_args = dict(self.config.rllm.env.get("env_args", {})) | self.env_args
 
         def _create_env(i):
-            if isinstance(env_args[i], str):
-                env_args[i] = json.loads(env_args[i])
             return i, self.env_class.from_dict({**env_args[i], **base_env_args})
 
         def _create_agent(i):

@@ -145,5 +145,21 @@ def validate_offline_replay_rows(rows: list[dict[str, Any]], *, source_path: str
 
 def load_offline_replay_file(path: str | Path) -> list[dict[str, Any]]:
     resolved = Path(path).expanduser().resolve()
+    if resolved.is_dir():
+        shard_paths = sorted(
+            candidate
+            for pattern in ("*.parquet", "*.arrow", "*.jsonl", "*.json")
+            for candidate in resolved.glob(pattern)
+            if candidate.is_file()
+        )
+        if not shard_paths:
+            raise FileNotFoundError(f"No offline replay files found in directory: {resolved}")
+
+        rows: list[dict[str, Any]] = []
+        for shard_path in shard_paths:
+            dataset = Dataset.load_data(str(shard_path))
+            rows.extend(dataset.get_data())
+        return validate_offline_replay_rows(rows, source_path=resolved)
+
     dataset = Dataset.load_data(str(resolved))
     return validate_offline_replay_rows(dataset.get_data(), source_path=resolved)
