@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import datasets
 import numpy as np
 import pandas as pd
@@ -8,13 +10,14 @@ from verl.utils.dataset.rl_dataset import RLHFDataset
 
 
 class LocalParquetRLHFDataset(RLHFDataset):
-    """RLHFDataset variant that avoids HF parquet scanning for nested columns.
+    """RLHFDataset variant that avoids fragile nested parquet loading paths.
 
     Some pyarrow/datasets combinations fail when scanning nested parquet columns
     through ``datasets.load_dataset("parquet", ...)`` or direct pyarrow parquet
     readers. This loader falls back to pandas parquet loading when pyarrow hits
-    nested/chunked conversion limits, while keeping the rest of VERL's
-    preprocessing logic unchanged.
+    nested/chunked conversion limits, and it can also read json/jsonl verl
+    companions directly while keeping the rest of VERL's preprocessing logic
+    unchanged.
     """
 
     @staticmethod
@@ -45,14 +48,27 @@ class LocalParquetRLHFDataset(RLHFDataset):
         table = pq.read_table(parquet_file)
         return [cls._normalize_loaded_value(row) for row in table.to_pylist()]
 
+    @classmethod
+    def _rows_from_json(cls, data_file: str) -> list[dict]:
+        if data_file.endswith(".jsonl"):
+            with open(data_file, encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+        else:
+            with open(data_file, encoding="utf-8") as f:
+                rows = json.load(f)
+        return [cls._normalize_loaded_value(row) for row in rows]
+
     def _read_files_and_tokenize(self):
         dataframes = []
         data_files = self.data_files if isinstance(self.data_files, list | tuple) else [self.data_files]
         for parquet_file in data_files:
-            try:
-                rows = self._rows_from_pyarrow(parquet_file)
-            except Exception:
-                rows = self._rows_from_pandas(parquet_file)
+            if parquet_file.endswith(".json") or parquet_file.endswith(".jsonl"):
+                rows = self._rows_from_json(parquet_file)
+            else:
+                try:
+                    rows = self._rows_from_pyarrow(parquet_file)
+                except Exception:
+                    rows = self._rows_from_pandas(parquet_file)
             dataframes.append(datasets.Dataset.from_list(rows))
 
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)

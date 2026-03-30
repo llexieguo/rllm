@@ -182,6 +182,10 @@ class Dataset:
         if data_path is None:
             return None
 
+        verl_jsonl_path = DatasetRegistry._verl_jsonl_path_for(data_path)
+        if os.path.exists(verl_jsonl_path):
+            return verl_jsonl_path
+
         verl_path = DatasetRegistry._verl_path_for(data_path)
         if os.path.exists(verl_path):
             return verl_path
@@ -451,6 +455,19 @@ class DatasetRegistry:
         return dataset_path.replace(".parquet", "_verl.parquet")
 
     @classmethod
+    def _verl_jsonl_path_for(cls, dataset_path: str) -> str:
+        """Derive the verl companion jsonl path from any dataset path."""
+        if dataset_path.endswith(".arrow"):
+            return dataset_path[: -len(".arrow")] + "_verl.jsonl"
+        if dataset_path.endswith(".parquet"):
+            return dataset_path[: -len(".parquet")] + "_verl.jsonl"
+        if dataset_path.endswith(".jsonl"):
+            return dataset_path[: -len(".jsonl")] + "_verl.jsonl"
+        if dataset_path.endswith(".json"):
+            return dataset_path[: -len(".json")] + "_verl.jsonl"
+        return dataset_path + "_verl.jsonl"
+
+    @classmethod
     def _verl_shard_dir_for(cls, verl_dataset_path: str) -> str:
         if verl_dataset_path.endswith(".parquet"):
             return verl_dataset_path[: -len(".parquet")] + "_shards"
@@ -460,6 +477,10 @@ class DatasetRegistry:
     def _cleanup_verl_outputs(cls, verl_dataset_path: str) -> None:
         if os.path.exists(verl_dataset_path):
             os.remove(verl_dataset_path)
+
+        verl_jsonl_path = cls._verl_jsonl_path_for(verl_dataset_path.replace("_verl.parquet", ".parquet"))
+        if os.path.exists(verl_jsonl_path):
+            os.remove(verl_jsonl_path)
 
         shard_dir = cls._verl_shard_dir_for(verl_dataset_path)
         if os.path.isdir(shard_dir):
@@ -489,6 +510,16 @@ class DatasetRegistry:
             shard_path = os.path.join(shard_dir, f"part-{shard_idx:05d}.parquet")
             shard_table = pa.Table.from_pylist(verl_data[start : start + shard_size])
             pq.write_table(shard_table, shard_path, row_group_size=min(shard_size, len(verl_data) - start))
+
+    @classmethod
+    def _write_verl_jsonl(cls, verl_data: list[dict[str, Any]], verl_dataset_path: str) -> None:
+        verl_jsonl_path = cls._verl_jsonl_path_for(verl_dataset_path.replace("_verl.parquet", ".parquet"))
+        if os.path.exists(verl_jsonl_path):
+            os.remove(verl_jsonl_path)
+
+        with open(verl_jsonl_path, "w", encoding="utf-8") as f:
+            for row in verl_data:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     @classmethod
     def register_dataset(cls, name: str, data: list[dict[str, Any]] | Any, split: str = "default", source: str = "", description: str = "", category: str = "") -> Dataset:
@@ -535,6 +566,7 @@ class DatasetRegistry:
             stripped = cls._strip_binary_columns(data_list, bin_cols)
             verl_data = cls.apply_verl_postprocessing(stripped)
             verl_dataset_path = cls._verl_path_for(dataset_path)
+            cls._write_verl_jsonl(verl_data, verl_dataset_path)
             cls._write_verl_parquet(verl_data, verl_dataset_path)
 
             fields = list(data_list[0].keys()) if data_list else []
@@ -548,6 +580,7 @@ class DatasetRegistry:
             # Apply Verl postprocessing and save
             verl_data = cls.apply_verl_postprocessing(data_list)
             verl_dataset_path = cls._verl_path_for(dataset_path)
+            cls._write_verl_jsonl(verl_data, verl_dataset_path)
             cls._write_verl_parquet(verl_data, verl_dataset_path)
 
             fields = list(data_df.columns)
@@ -705,6 +738,9 @@ class DatasetRegistry:
         verl_path = cls._verl_path_for(dataset_path)
         if os.path.exists(verl_path):
             os.remove(verl_path)
+        verl_jsonl_path = cls._verl_jsonl_path_for(dataset_path)
+        if os.path.exists(verl_jsonl_path):
+            os.remove(verl_jsonl_path)
 
         # Remove split from registry
         del datasets[name]["splits"][split]
@@ -749,6 +785,9 @@ class DatasetRegistry:
             verl_path = cls._verl_path_for(path)
             if os.path.exists(verl_path):
                 os.remove(verl_path)
+            verl_jsonl_path = cls._verl_jsonl_path_for(path)
+            if os.path.exists(verl_jsonl_path):
+                os.remove(verl_jsonl_path)
 
         # Clean up legacy images directory and dataset directory
         dataset_dir = os.path.join(cls._DATASET_DIR, name)

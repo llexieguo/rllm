@@ -119,6 +119,8 @@ class TestRegisterFormatDispatch:
         # Verify verl companion exists
         verl_path = DatasetRegistry._verl_path_for(abs_path)
         assert os.path.exists(verl_path)
+        verl_jsonl_path = DatasetRegistry._verl_jsonl_path_for(abs_path)
+        assert os.path.exists(verl_jsonl_path)
 
     def test_text_dataset_uses_parquet(self, tmp_rllm_home):
         """Data without binary columns should use .parquet."""
@@ -167,7 +169,7 @@ class TestVerlPathFromArrow:
         ds = DatasetRegistry.register_dataset("verl_arrow", data, split="test")
         verl_path = ds.get_verl_data_path()
         assert verl_path is not None
-        assert verl_path.endswith("_verl.parquet")
+        assert verl_path.endswith("_verl.jsonl")
         assert os.path.exists(verl_path)
 
 
@@ -194,19 +196,22 @@ class TestStripBinaryColumns:
 
 class TestRemoveCleanup:
     def test_remove_cleans_arrow_and_verl(self, tmp_rllm_home):
-        """Removing a dataset should clean up .arrow and _verl.parquet files."""
+        """Removing a dataset should clean up .arrow and verl companion files."""
         data = [{"text": "q", "img": b"\x89PNG"}]
         DatasetRegistry.register_dataset("rm_test", data, split="test")
 
         registry = DatasetRegistry._load_registry()
         path = DatasetRegistry._resolve_path(registry["datasets"]["rm_test"]["splits"]["test"]["path"])
         verl_path = DatasetRegistry._verl_path_for(path)
+        verl_jsonl_path = DatasetRegistry._verl_jsonl_path_for(path)
         assert os.path.exists(path)
         assert os.path.exists(verl_path)
+        assert os.path.exists(verl_jsonl_path)
 
         DatasetRegistry.remove_dataset("rm_test")
         assert not os.path.exists(path)
         assert not os.path.exists(verl_path)
+        assert not os.path.exists(verl_jsonl_path)
 
     def test_remove_cleans_legacy_images_dir(self, tmp_rllm_home):
         """Removing a dataset should clean up legacy images/ directory."""

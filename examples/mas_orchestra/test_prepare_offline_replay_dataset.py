@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -72,7 +72,9 @@ def test_prepare_offline_replay_dataset_registers_local_splits(tmp_path, monkeyp
 
     verl_path = train_dataset.get_verl_data_path()
     assert verl_path is not None
-    verl_row = pd.read_parquet(verl_path).iloc[0].to_dict()
+    assert Path(verl_path).suffix == ".jsonl"
+    with Path(verl_path).open(encoding="utf-8") as handle:
+        verl_row = json.loads(handle.readline())
     assert verl_row["extra_info"].keys() == {"__rllm_payload__"}
     decoded = deserialize_verl_extra_info(verl_row["extra_info"])
     assert decoded["task_id"] == "t1"
