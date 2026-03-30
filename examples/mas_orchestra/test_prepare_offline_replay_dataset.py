@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from omegaconf import OmegaConf
 
@@ -132,3 +134,24 @@ def test_prepare_offline_replay_dataset_rejects_other_missing_step_fields(tmp_pa
             dataset_name=f"mas_offline_bad_{missing_key}",
             train_file=str(bad_path),
         )
+
+
+def test_local_parquet_rlhf_dataset_reads_nested_multi_row_group_parquet(tmp_path):
+    rows = DatasetRegistry.apply_verl_postprocessing([build_row(f"rg-{idx}") for idx in range(5)])
+    parquet_path = tmp_path / "nested_multi_row_group.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), parquet_path, row_group_size=2)
+
+    dataset = LocalParquetRLHFDataset(
+        data_files=str(parquet_path),
+        tokenizer=None,
+        config=OmegaConf.create(
+            {
+                "cache_dir": str(tmp_path / "cache"),
+                "filter_overlong_prompts": False,
+                "return_multi_modal_inputs": False,
+            }
+        ),
+    )
+
+    assert len(dataset) == 5
+    assert dataset.dataframe[0]["extra_info"]["__rllm_payload__"].startswith("pickle_b64:")

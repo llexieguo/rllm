@@ -18,11 +18,15 @@ class LocalParquetRLHFDataset(RLHFDataset):
 
     def _read_files_and_tokenize(self):
         dataframes = []
-        for parquet_file in self.data_files:
+        data_files = self.data_files if isinstance(self.data_files, list | tuple) else [self.data_files]
+        for parquet_file in data_files:
             parquet = pq.ParquetFile(parquet_file)
             rows: list[dict] = []
-            for record_batch in parquet.iter_batches():
-                rows.extend(record_batch.to_pylist())
+            # Read one row group at a time instead of using iter_batches().
+            # Some pyarrow versions raise ArrowNotImplementedError for nested
+            # parquet columns when iter_batches() materializes chunked outputs.
+            for row_group_idx in range(parquet.num_row_groups):
+                rows.extend(parquet.read_row_group(row_group_idx).to_pylist())
             dataframes.append(datasets.Dataset.from_list(rows))
 
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
