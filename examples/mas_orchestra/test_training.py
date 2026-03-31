@@ -198,8 +198,6 @@ def test_build_offline_trainer_configures_reinforce_replay_defaults(monkeypatch)
     assert config.data.val_files is None
     assert config.data.train_batch_size == 1
     assert config.actor_rollout_ref.actor.ppo_mini_batch_size == 1
-
-
 @dataclass
 class FakeTokenizer:
     pad_token_id: int = 0
