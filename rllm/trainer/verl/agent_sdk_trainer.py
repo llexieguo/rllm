@@ -37,6 +37,7 @@ from verl.utils.tracking import Tracking
 
 from rllm.engine.agent_sdk_engine import AgentSdkEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
+from rllm.trainer.verl.progress import advance_training_progress, create_training_progress_bar
 from rllm.utils import colorful_print
 from rllm.workflows.workflow import TerminationReason
 
@@ -197,34 +198,36 @@ class AgentSdkTrainer(RayPPOTrainer):
         metrics = {}
         timing_raw = {}
 
-        for epoch in range(self.config.trainer.total_epochs):
-            pprint(f"epoch {epoch}, step {self.global_steps} started")
-            for batch_dict in self.train_dataloader:
-                do_profile = self.global_steps in self.config.trainer.profile_steps if self.config.trainer.get("profile_steps") is not None else False
-                with marked_timer("start_profile", timing_raw):
-                    self._start_profiling(do_profile)
+        progress_bar = create_training_progress_bar(self, desc="Training SDK PPO")
+        try:
+            for epoch in range(self.config.trainer.total_epochs):
+                pprint(f"epoch {epoch}, step {self.global_steps} started")
+                for batch_dict in self.train_dataloader:
+                    do_profile = self.global_steps in self.config.trainer.profile_steps if self.config.trainer.get("profile_steps") is not None else False
+                    with marked_timer("start_profile", timing_raw):
+                        self._start_profiling(do_profile)
 
-                new_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                num_tasks += len(new_batch.batch)
+                    new_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                    num_tasks += len(new_batch.batch)
 
-                new_batch.non_tensor_batch["task_ids"] = np.array([str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object)
-                new_batch = new_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n)
+                    new_batch.non_tensor_batch["task_ids"] = np.array([str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object)
+                    new_batch = new_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n)
 
-                new_batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"], non_tensor_batch_keys=["raw_prompt_ids"])
+                    new_batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"], non_tensor_batch_keys=["raw_prompt_ids"])
 
-                with marked_timer("step", timing_raw):
-                    # generate trajectories
-                    final_gen_batch_output = self.generate_trajectories(batch=new_batch, timing_raw=timing_raw)
+                    with marked_timer("step", timing_raw):
+                        # generate trajectories
+                        final_gen_batch_output = self.generate_trajectories(batch=new_batch, timing_raw=timing_raw)
 
-                    # need to repeat to make shape match
-                    repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]
-                    new_batch = new_batch.sample_level_repeat(repeat_counts)
-                    final_gen_batch_output.meta_info.pop("repeat_counts", None)  # no longer needed after this
-                    new_batch = new_batch.union(final_gen_batch_output)
+                        # need to repeat to make shape match
+                        repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]
+                        new_batch = new_batch.sample_level_repeat(repeat_counts)
+                        final_gen_batch_output.meta_info.pop("repeat_counts", None)  # no longer needed after this
+                        new_batch = new_batch.union(final_gen_batch_output)
 
-                    # rejection sampling
-                    # we do rejection sampling at the episode level instead of the traj/step level
-                    uids = new_batch.non_tensor_batch["task_ids"]
+                        # rejection sampling
+                        # we do rejection sampling at the episode level instead of the traj/step level
+                        uids = new_batch.non_tensor_batch["task_ids"]
                     unique_uids = np.unique(uids)
                     is_correct = new_batch.non_tensor_batch["is_correct"]
                     drop_uids = set()
@@ -527,6 +530,7 @@ class AgentSdkTrainer(RayPPOTrainer):
                 metrics = {}
                 timing_raw = {}
 
+                advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
                 self.global_steps += 1
 
                 if self.global_steps >= self.total_training_steps:
@@ -536,6 +540,8 @@ class AgentSdkTrainer(RayPPOTrainer):
                         pprint(f"Final validation metrics: {val_metrics}")
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
+        finally:
+            progress_bar.close()
 
     def _validate_agent(self):
         """Run validation on test set and compute pass@k metrics."""

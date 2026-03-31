@@ -35,6 +35,7 @@ from verl.utils.debug import marked_timer
 
 from rllm.engine.agent_workflow_engine import AgentWorkflowEngine
 from rllm.engine.rollout.verl_engine import VerlEngine
+from rllm.trainer.verl.progress import advance_training_progress, create_training_progress_bar
 from rllm.utils.episode_logger import EpisodeLogger
 from rllm.workflows.workflow import TerminationReason
 
@@ -170,38 +171,40 @@ class AgentWorkflowPPOTrainer(RayPPOTrainer):
         metrics = {}
         timing_raw = {}
 
-        for epoch in range(self.config.trainer.total_epochs):
-            pprint(f"epoch {epoch}, step {self.global_steps} started")
-            for batch_dict in self.train_dataloader:
-                do_profile = self.global_steps in self.config.trainer.profile_steps if self.config.trainer.get("profile_steps") is not None else False
-                with marked_timer("start_profile", timing_raw):
-                    self._start_profiling(do_profile)
+        progress_bar = create_training_progress_bar(self, desc="Training Workflow PPO")
+        try:
+            for epoch in range(self.config.trainer.total_epochs):
+                pprint(f"epoch {epoch}, step {self.global_steps} started")
+                for batch_dict in self.train_dataloader:
+                    do_profile = self.global_steps in self.config.trainer.profile_steps if self.config.trainer.get("profile_steps") is not None else False
+                    with marked_timer("start_profile", timing_raw):
+                        self._start_profiling(do_profile)
 
-                new_batch: DataProto = DataProto.from_single_dict(batch_dict)
-                num_tasks += len(new_batch.batch)
+                    new_batch: DataProto = DataProto.from_single_dict(batch_dict)
+                    num_tasks += len(new_batch.batch)
 
-                new_batch.non_tensor_batch["task_ids"] = np.array([str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object)
-                new_batch = new_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n)
+                    new_batch.non_tensor_batch["task_ids"] = np.array([str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object)
+                    new_batch = new_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n)
 
-                new_batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"], non_tensor_batch_keys=["raw_prompt_ids"])
+                    new_batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"], non_tensor_batch_keys=["raw_prompt_ids"])
 
-                # Update training step in engine for episode logging
-                self.agent_execution_engine.set_training_step(self.global_steps, mode="train", epoch=epoch)
+                    # Update training step in engine for episode logging
+                    self.agent_execution_engine.set_training_step(self.global_steps, mode="train", epoch=epoch)
 
-                with marked_timer("step", timing_raw):
-                    # generate trajectories
-                    try:
-                        final_gen_batch_output = self.generate_trajectories(batch=new_batch, timing_raw=timing_raw)
-                    except ExternalCostBudgetExceeded as exc:
-                        print(f"API cost budget exceeded during rollout generation: total_cost={exc.total_cost:.6f}, budget={exc.budget:.6f}. Saving checkpoint and stopping training.")
-                        logger.log(data={"budget/total_cost": exc.total_cost, "budget/limit": exc.budget, "training/global_step": self.global_steps, "training/epoch": epoch}, step=self.global_steps)
-                        with marked_timer("save_checkpoint", timing_raw, color="green"):
-                            self._save_checkpoint()
+                    with marked_timer("step", timing_raw):
+                        # generate trajectories
                         try:
-                            logger.finish()
-                        except Exception:
-                            pass
-                        return
+                            final_gen_batch_output = self.generate_trajectories(batch=new_batch, timing_raw=timing_raw)
+                        except ExternalCostBudgetExceeded as exc:
+                            print(f"API cost budget exceeded during rollout generation: total_cost={exc.total_cost:.6f}, budget={exc.budget:.6f}. Saving checkpoint and stopping training.")
+                            logger.log(data={"budget/total_cost": exc.total_cost, "budget/limit": exc.budget, "training/global_step": self.global_steps, "training/epoch": epoch}, step=self.global_steps)
+                            with marked_timer("save_checkpoint", timing_raw, color="green"):
+                                self._save_checkpoint()
+                            try:
+                                logger.finish()
+                            except Exception:
+                                pass
+                            return
 
                     # need to repeat to make shape match
                     repeat_counts = final_gen_batch_output.meta_info["repeat_counts"]
@@ -509,6 +512,7 @@ class AgentWorkflowPPOTrainer(RayPPOTrainer):
                 metrics = {}
                 timing_raw = {}
 
+                advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
                 self.global_steps += 1
 
                 if self.global_steps >= self.total_training_steps:
@@ -525,6 +529,8 @@ class AgentWorkflowPPOTrainer(RayPPOTrainer):
                         pass  # skip errors during cleanup
 
                     return
+        finally:
+            progress_bar.close()
 
     def _validate_agent(self):
         is_correct_lst = []

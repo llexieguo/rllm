@@ -29,6 +29,7 @@ from verl.utils.metric import reduce_metrics
 
 from rllm.data.dataset import deserialize_verl_extra_info
 from rllm.engine.agent_execution_engine import AsyncAgentExecutionEngine
+from rllm.trainer.verl.progress import advance_training_progress, create_training_progress_bar
 
 
 class AgentPPOTrainer(RayPPOTrainer):
@@ -154,23 +155,25 @@ class AgentPPOTrainer(RayPPOTrainer):
         # we start from step 1
         self.global_steps += 1
 
-        for epoch in range(self.config.trainer.total_epochs):
-            pprint(f"epoch {epoch}, step {self.global_steps} started")
-            for batch_dict in self.train_dataloader:
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
-                batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
-                batch = batch.repeat(
-                    repeat_times=self.config.actor_rollout_ref.rollout.n,
-                    interleave=True,
-                )
+        progress_bar = create_training_progress_bar(self, desc="Training PPO")
+        try:
+            for epoch in range(self.config.trainer.total_epochs):
+                pprint(f"epoch {epoch}, step {self.global_steps} started")
+                for batch_dict in self.train_dataloader:
+                    batch: DataProto = DataProto.from_single_dict(batch_dict)
+                    batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object)
+                    batch = batch.repeat(
+                        repeat_times=self.config.actor_rollout_ref.rollout.n,
+                        interleave=True,
+                    )
 
-                metrics = {}
-                timing_raw = {}
+                    metrics = {}
+                    timing_raw = {}
 
-                batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"])
+                    batch.pop(batch_keys=["input_ids", "attention_mask", "position_ids"])
 
-                with marked_timer("step", timing_raw):
-                    self.init_envs_and_agents(batch)
+                    with marked_timer("step", timing_raw):
+                        self.init_envs_and_agents(batch)
 
                     if self.config.rllm.stepwise_advantage.enable:
                         final_gen_batch_output = self.generate_agent_steps(timing_raw=timing_raw, meta_info=batch.meta_info, uids=batch.non_tensor_batch["uid"])
@@ -442,6 +445,7 @@ class AgentPPOTrainer(RayPPOTrainer):
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
 
+                advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
                 self.global_steps += 1
 
                 if self.global_steps >= self.total_training_steps:
@@ -451,6 +455,8 @@ class AgentPPOTrainer(RayPPOTrainer):
                         pprint(f"Final validation metrics: {val_metrics}")
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
+        finally:
+            progress_bar.close()
 
     def _validate_agent(self):
         rewards_lst = []
