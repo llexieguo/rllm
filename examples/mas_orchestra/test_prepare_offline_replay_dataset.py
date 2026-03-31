@@ -121,6 +121,61 @@ def test_prepare_offline_replay_dataset_main_prints_canonical_and_verl_paths(tmp
     assert "train_verl.jsonl" in output
 
 
+def test_prepare_offline_replay_dataset_skips_existing_split_without_force(tmp_path, monkeypatch, capsys):
+    configure_registry(tmp_path, monkeypatch)
+    train_path = tmp_path / "train.jsonl"
+    write_jsonl(train_path, [build_row("original")])
+
+    prepare_offline_replay_dataset(
+        dataset_name="mas_offline_skip",
+        train_file=str(train_path),
+    )
+
+    write_jsonl(train_path, [build_row("updated")])
+    train_dataset, _, _ = prepare_offline_replay_dataset(
+        dataset_name="mas_offline_skip",
+        train_file=str(train_path),
+    )
+    output = capsys.readouterr().out
+
+    assert "Skipping dataset 'mas_offline_skip' split 'train'" in output
+    assert train_dataset.get_data()[0]["task_id"] == "original"
+
+    loaded_train = DatasetRegistry.load_dataset("mas_offline_skip", "train")
+    assert loaded_train is not None
+    assert loaded_train.get_data()[0]["task_id"] == "original"
+
+
+def test_prepare_offline_replay_dataset_main_force_overwrites_existing_split(tmp_path, monkeypatch):
+    configure_registry(tmp_path, monkeypatch)
+    train_path = tmp_path / "train.jsonl"
+    write_jsonl(train_path, [build_row("original")])
+
+    prepare_offline_replay_dataset(
+        dataset_name="mas_offline_force",
+        train_file=str(train_path),
+    )
+
+    write_jsonl(train_path, [build_row("updated")])
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prepare_offline_replay_dataset.py",
+            "--dataset-name",
+            "mas_offline_force",
+            "--train-file",
+            str(train_path),
+            "--force",
+        ],
+    )
+
+    prepare_offline_replay_main()
+
+    loaded_train = DatasetRegistry.load_dataset("mas_offline_force", "train")
+    assert loaded_train is not None
+    assert loaded_train.get_data()[0]["task_id"] == "updated"
+
+
 def test_prepare_offline_replay_dataset_rejects_missing_row_field(tmp_path, monkeypatch):
     configure_registry(tmp_path, monkeypatch)
     bad_path = tmp_path / "bad.jsonl"
