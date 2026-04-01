@@ -18,6 +18,7 @@ PPO_RAY_RUNTIME_ENV = {
 }
 
 FORWARD_PREFIXES = [
+    "WANDB_",
     "VLLM_",
     "SGL_",
     "SGLANG_",

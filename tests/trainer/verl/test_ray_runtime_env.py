@@ -7,6 +7,8 @@ from rllm.trainer.verl.ray_runtime_env import _get_forwarded_env_vars
 def test_forward_basic_env_vars():
     """Test that environment variables with matching prefixes are forwarded."""
     test_env = {
+        "WANDB_API_KEY": "wandb_key",
+        "WANDB_MODE": "online",
         "VLLM_LOGGING_LEVEL": "INFO",
         "NCCL_DEBUG": "INFO",
         "HF_TOKEN": "test_token",
@@ -18,6 +20,8 @@ def test_forward_basic_env_vars():
     with patch.dict(os.environ, test_env, clear=True):
         forwarded = _get_forwarded_env_vars()
 
+    assert "WANDB_API_KEY" in forwarded
+    assert forwarded["WANDB_MODE"] == "online"
     assert "VLLM_LOGGING_LEVEL" in forwarded
     assert forwarded["VLLM_LOGGING_LEVEL"] == "INFO"
     assert "NCCL_DEBUG" in forwarded
@@ -44,6 +48,7 @@ def test_no_matching_env_vars():
 def test_all_prefixes_forwarded():
     """Test that all defined prefixes are forwarded correctly."""
     test_env = {
+        "WANDB_TEST": "wandb",
         "VLLM_TEST": "vllm",
         "SGL_TEST": "sgl",
         "SGLANG_TEST": "sglang",
