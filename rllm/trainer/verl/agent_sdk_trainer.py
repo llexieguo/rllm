@@ -204,6 +204,7 @@ class AgentSdkTrainer(RayPPOTrainer):
                 pprint(f"epoch {epoch}, step {self.global_steps} started")
                 for batch_dict in self.train_dataloader:
                     do_profile = self.global_steps in self.config.trainer.profile_steps if self.config.trainer.get("profile_steps") is not None else False
+                    profile_stopped = False
                     with marked_timer("start_profile", timing_raw):
                         self._start_profiling(do_profile)
 
@@ -280,6 +281,8 @@ class AgentSdkTrainer(RayPPOTrainer):
                             batch = DataProto.concat([batch, new_batch])
 
                         if solve_partial < self.config.data.train_batch_size:
+                            self._stop_profiling(do_profile)
+                            profile_stopped = True
                             continue
                         else:
                             # randomly select bsz task uids from batch, then filter batch to only contain these tasks
@@ -488,58 +491,60 @@ class AgentSdkTrainer(RayPPOTrainer):
                             for idx in sample_indices:
                                 self.visualize_trajectory_last_step(batch, sample_idx=idx, max_samples=1)
 
-                with marked_timer("stop_profile", timing_raw):
-                    self._stop_profiling(do_profile)
+                    with marked_timer("stop_profile", timing_raw):
+                        self._stop_profiling(do_profile)
+                    profile_stopped = True
 
-                # training metrics
-                metrics.update(
-                    {
-                        "training/global_step": self.global_steps,
-                        "training/epoch": epoch,
-                    }
-                )
-                # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
-                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
-                # TODO: implement actual tflpo and theoretical tflpo
-                n_gpus = self.resource_pool_manager.get_n_gpus()
-                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+                    # training metrics
+                    metrics.update(
+                        {
+                            "training/global_step": self.global_steps,
+                            "training/epoch": epoch,
+                        }
+                    )
+                    # collect metrics
+                    metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                    metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                    # TODO: implement actual tflpo and theoretical tflpo
+                    n_gpus = self.resource_pool_manager.get_n_gpus()
+                    metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
-                metrics["batch/solve_none"] = solve_none / num_tasks
-                metrics["batch/solve_all"] = solve_all / num_tasks
-                metrics["batch/solve_partial"] = solve_partial / num_tasks
+                    metrics["batch/solve_none"] = solve_none / num_tasks
+                    metrics["batch/solve_all"] = solve_all / num_tasks
+                    metrics["batch/solve_partial"] = solve_partial / num_tasks
 
-                for key, value in workflow_metrics.items():
-                    metrics[f"batch/{key}"] = np.mean(value)
+                    for key, value in workflow_metrics.items():
+                        metrics[f"batch/{key}"] = np.mean(value)
 
-                for r in TerminationReason:
-                    metrics[f"batch/{r.value}"] = termination_counts[r.value] / len(set(new_batch.non_tensor_batch["episode_ids"]))
+                    for r in TerminationReason:
+                        metrics[f"batch/{r.value}"] = termination_counts[r.value] / len(set(new_batch.non_tensor_batch["episode_ids"]))
 
-                metrics["batch/num_tasks"] = num_tasks
+                    metrics["batch/num_tasks"] = num_tasks
 
-                # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=self.global_steps)
+                    # TODO: make a canonical logger that supports various backend
+                    logger.log(data=metrics, step=self.global_steps)
 
-                batch = None
-                solve_none = 0
-                solve_all = 0
-                solve_partial = 0
-                num_tasks = 0
-                termination_counts = Counter()
-                workflow_metrics = defaultdict(list)
-                metrics = {}
-                timing_raw = {}
+                    batch = None
+                    solve_none = 0
+                    solve_all = 0
+                    solve_partial = 0
+                    num_tasks = 0
+                    termination_counts = Counter()
+                    workflow_metrics = defaultdict(list)
+                    metrics = {}
+                    timing_raw = {}
 
-                advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
-                self.global_steps += 1
+                    advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
+                    self.global_steps += 1
 
-                if self.global_steps >= self.total_training_steps:
-                    # perform validation after training
-                    if self.val_reward_fn is not None:
-                        val_metrics = self._validate_agent()
-                        pprint(f"Final validation metrics: {val_metrics}")
-                        logger.log(data=val_metrics, step=self.global_steps)
-                    return
+                    if self.global_steps >= self.total_training_steps:
+                        # perform validation after training
+                        if self.val_reward_fn is not None:
+                            val_metrics = self._validate_agent()
+                            pprint(f"Final validation metrics: {val_metrics}")
+                            logger.log(data=val_metrics, step=self.global_steps)
+                        return
+
         finally:
             progress_bar.close()
 

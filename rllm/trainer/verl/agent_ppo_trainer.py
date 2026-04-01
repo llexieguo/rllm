@@ -438,23 +438,23 @@ class AgentPPOTrainer(RayPPOTrainer):
                         with marked_timer("save_checkpoint", timing_raw):
                             self._save_checkpoint()
 
-                # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
-                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                    # collect metrics
+                    metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                    metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
-                # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=self.global_steps)
+                    # TODO: make a canonical logger that supports various backend
+                    logger.log(data=metrics, step=self.global_steps)
 
-                advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
-                self.global_steps += 1
+                    advance_training_progress(progress_bar, epoch=epoch, global_step=self.global_steps)
+                    self.global_steps += 1
 
-                if self.global_steps >= self.total_training_steps:
-                    # perform validation after training
-                    if self.val_reward_fn is not None:
-                        val_metrics = self._validate_agent()
-                        pprint(f"Final validation metrics: {val_metrics}")
-                        logger.log(data=val_metrics, step=self.global_steps)
-                    return
+                    if self.global_steps >= self.total_training_steps:
+                        # perform validation after training
+                        if self.val_reward_fn is not None:
+                            val_metrics = self._validate_agent()
+                            pprint(f"Final validation metrics: {val_metrics}")
+                            logger.log(data=val_metrics, step=self.global_steps)
+                        return
         finally:
             progress_bar.close()
 
