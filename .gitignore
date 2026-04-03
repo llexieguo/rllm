@@ -225,3 +225,6 @@ gcp-key.json
 
 
 ./data/
+
+examples/mas_orchestra/train_offline.sh
+mas.sh
