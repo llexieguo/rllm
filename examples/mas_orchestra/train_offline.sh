@@ -102,6 +102,10 @@ action=(
   "actor_rollout_ref.model.trust_remote_code=${TRUST_REMOTE_CODE}"
   "critic.model.path=${MODEL_PATH}"
   "critic.model.trust_remote_code=${TRUST_REMOTE_CODE}"
+  "actor_rollout_ref.actor.checkpoint.save_contents=[model,extra]"
+  "actor_rollout_ref.actor.checkpoint.load_contents=[model,extra]"
+  "critic.checkpoint.save_contents=[model,extra]"
+  "critic.checkpoint.load_contents=[model,extra]"
 )
 
 "${action[@]}" "$@"
